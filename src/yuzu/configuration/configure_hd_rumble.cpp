@@ -243,9 +243,9 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
     strength_row->addWidget(xbox_strength);
     strength_row->addWidget(new QLabel(QStringLiteral("%")));
     xbox_mode = new QComboBox;
-    xbox_mode->addItem(tr("RenHDrum (detailed, softer)"), 0);
+    xbox_mode->addItem(tr("RenHDrum (smart: richer effects, best on official Xbox controllers)"), 0);
     xbox_mode->addItem(tr("Direct (stronger: raw motor power, less nuance)"), 1);
-    xbox_mode->setToolTip(tr("RenHDrum: richer effects, but soft on some controllers.\n"
+    xbox_mode->setToolTip(tr("RenHDrum: richer effects, made for official Xbox controllers.\n"
                              "Direct: full motor power, simpler feel."));
     form->addRow(xbox_enabled);
     form->addRow(tr("Mode"), xbox_mode);
