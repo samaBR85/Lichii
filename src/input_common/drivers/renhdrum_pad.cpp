@@ -335,7 +335,15 @@ struct RenHDrumPad::Impl {
                 // Start only once published: from here on, the DSP is replaced or freed only
                 // under SDL_LockAudioStream or after SDL_DestroyAudioStream. The callback never
                 // takes `mutex`.
-                SDL_ResumeAudioStreamDevice(stream);
+                if (!SDL_ResumeAudioStreamDevice(stream)) {
+                    // Not playing: unpublish so vibration falls back to standard rumble and
+                    // the remaining retries can still open the device. The callback never ran.
+                    LOG_WARNING(Input, "RenHDrum: DualSense audio did not start: {}",
+                                SDL_GetError());
+                    audio_stream = nullptr;
+                    audio_inited = false;
+                    opened = false;
+                }
             }
         }
         if (!opened) {
