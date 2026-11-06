@@ -484,7 +484,10 @@ target_link_libraries(yuzu PRIVATE OpenSSL::SSL OpenSSL::Crypto SDL3::SDL3)
 
 create_target_directory_groups(yuzu)
 
-if (ENABLE_RENHDRUM AND RENHDRUM_DOWNLOAD AND WIN32)
+if (ENABLE_RENHDRUM AND RENHDRUM_DOWNLOAD AND WIN32 AND NOT ARCHITECTURE_x86_64)
+    message(WARNING "RENHDRUM_DOWNLOAD: the prebuilt renhdrum.dll is x64 only; skipped for this architecture")
+endif()
+if (ENABLE_RENHDRUM AND RENHDRUM_DOWNLOAD AND WIN32 AND ARCHITECTURE_x86_64)
     set(RENHDRUM_VERSION 0.2.1)
     set(RENHDRUM_DLL "${CMAKE_BINARY_DIR}/renhdrum/${RENHDRUM_VERSION}/renhdrum.dll")
     if (NOT EXISTS "${RENHDRUM_DLL}")
