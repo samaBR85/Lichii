@@ -98,10 +98,12 @@ ConfigureHdRumble::ConfigureHdRumble(QWidget* parent) : QDialog(parent) {
     page_list = new QListWidget;
     page_list->addItem(tr("Switch Controller"));
     page_list->addItem(tr("DualSense"));
+    page_list->addItem(tr("Xbox"));
     page_list->setFixedWidth(170);
     pages = new QStackedWidget;
     pages->addWidget(CreateSwitchPage());
     pages->addWidget(CreateDualSensePage());
+    pages->addWidget(CreateXboxPage());
     connect(page_list, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
     page_list->setCurrentRow(0);
     body->addWidget(page_list);
@@ -183,10 +185,10 @@ QWidget* ConfigureHdRumble::CreateDualSensePage() {
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(MakeNote(tr("Rumble through the haptic voice coils of the PS5 controller "
-                                  "(DualSense and DualSense Edge), as 48,000 samples per second "
-                                  "of audio.")));
+                                  "(DualSense and DualSense Edge): as 48,000 samples per second "
+                                  "of audio when wired, and as HID reports on Bluetooth.")));
 
-    auto* group = new QGroupBox(tr("Wired (USB)"));
+    auto* group = new QGroupBox(tr("Haptics"));
     auto* form = new QFormLayout(group);
     ds_enabled = new QCheckBox(tr("Use the haptic voice coils"));
     ds_enabled->setToolTip(tr("Off: the DualSense uses its standard rumble."));
@@ -207,7 +209,33 @@ QWidget* ConfigureHdRumble::CreateDualSensePage() {
     form->addRow(ds_crisp_notes);
     layout->addWidget(group);
 
-    layout->addWidget(MakeNote(tr("On Bluetooth the DualSense uses its standard rumble.")));
+    layout->addWidget(MakeNote(tr("Bluetooth haptics need RenHDrum 0.2.1 or newer; with an older "
+                                  "renhdrum.dll a DualSense on Bluetooth uses its standard "
+                                  "rumble.")));
+    layout->addStretch();
+    return page;
+}
+
+QWidget* ConfigureHdRumble::CreateXboxPage() {
+    auto* page = new QWidget;
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(MakeNote(tr("Xbox One, Series and Xbox 360 style controllers, from Microsoft "
+                                  "or other brands: the game's HD Rumble translated by RenHDrum "
+                                  "for the controller's motors.")));
+
+    auto* group = new QGroupBox(tr("Motors"));
+    auto* form = new QFormLayout(group);
+    xbox_enabled = new QCheckBox(tr("Use RenHDrum's Xbox rumble"));
+    xbox_enabled->setToolTip(tr("Off: Xbox controllers use the emulator's standard rumble."));
+    form->addRow(xbox_enabled);
+    layout->addWidget(group);
+
+    layout->addWidget(MakeNote(
+        tr("The trigger motors play only when the connection exposes them (an Xbox One or "
+           "Series controller through Windows' Xbox driver). Through XInput, as with most "
+           "2.4 GHz receivers, only the two grip motors play. Tuned on the Xbox One S "
+           "controller; other controllers are untested.")));
     layout->addStretch();
     return page;
 }
@@ -228,6 +256,7 @@ void ConfigureHdRumble::LoadConfiguration() {
     ds_enabled->setChecked(s.dualsense_haptics_enabled.GetValue());
     ds_volume->setValue(std::clamp(s.dualsense_haptics_volume.GetValue(), 0, 100));
     ds_crisp_notes->setChecked(s.dualsense_crisp_notes.GetValue());
+    xbox_enabled->setChecked(s.xbox_rumble_enabled.GetValue());
     UpdateEnabledState();
 }
 
@@ -246,6 +275,7 @@ void ConfigureHdRumble::RestoreDefaults() {
     ds_enabled->setChecked(true);
     ds_volume->setValue(100);
     ds_crisp_notes->setChecked(true);
+    xbox_enabled->setChecked(true);
     UpdateEnabledState();
 }
 
@@ -279,4 +309,5 @@ void ConfigureHdRumble::ApplyConfiguration() {
     s.dualsense_haptics_enabled.SetValue(ds_enabled->isChecked());
     s.dualsense_haptics_volume.SetValue(ds_volume->value());
     s.dualsense_crisp_notes.SetValue(ds_crisp_notes->isChecked());
+    s.xbox_rumble_enabled.SetValue(xbox_enabled->isChecked());
 }

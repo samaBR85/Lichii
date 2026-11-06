@@ -149,6 +149,7 @@ struct UserSettings {
     bool dualsense_enabled{true};
     int dualsense_volume{100};
     bool dualsense_crisp_notes{true};
+    bool xbox_enabled{true};
     int gain{100};
     int low_boost{0};
     bool operator==(const UserSettings&) const = default;
@@ -169,6 +170,7 @@ UserSettings ReadUserSettings() {
         .dualsense_enabled = s.dualsense_haptics_enabled.GetValue(),
         .dualsense_volume = std::clamp(s.dualsense_haptics_volume.GetValue(), 0, 100),
         .dualsense_crisp_notes = s.dualsense_crisp_notes.GetValue(),
+        .xbox_enabled = s.xbox_rumble_enabled.GetValue(),
         .gain = std::clamp(s.hd_rumble_gain.GetValue(), 25, 1000),
         .low_boost = std::clamp(s.hd_rumble_low_boost.GetValue(), 0, 100),
     };
@@ -742,7 +744,7 @@ bool RenHDrumPad::Vibrate(std::int64_t now_us, bool is_right,
         const auto& u = impl->user;
         const auto& api = Api();
         if (impl->xbox) {
-            if (u.hd_enabled) {
+            if (u.hd_enabled && u.xbox_enabled) {
                 api.xbox_push_half_sample(impl->xbox, now_us, is_right,
                                           ShapeAmplitude(status.low_amplitude, u),
                                           status.low_frequency,

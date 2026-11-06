@@ -28,6 +28,7 @@ public:
 private:
     QWidget* CreateSwitchPage();
     QWidget* CreateDualSensePage();
+    QWidget* CreateXboxPage();
     void LoadConfiguration();
     void RestoreDefaults();
     void UpdateEnabledState();
@@ -56,4 +57,6 @@ private:
     QSlider* ds_volume_slider{};
     QSpinBox* ds_volume{};
     QCheckBox* ds_crisp_notes{};
+
+    QCheckBox* xbox_enabled{};
 };
