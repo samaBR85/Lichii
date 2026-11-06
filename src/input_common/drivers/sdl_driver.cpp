@@ -7,6 +7,7 @@
 #include <array>
 #include <chrono>
 #include <numbers>
+#include <vector>
 #include "common/logging.h"
 #include "common/math_util.h"
 #include "common/param_package.h"
@@ -626,16 +627,27 @@ void SDLDriver::PumpEvents() const {
     }
     SDL_PumpEvents();
 
-    // RenHDrum paces HD Rumble packets itself; due ones go out here
-    const auto now = std::chrono::steady_clock::now().time_since_epoch();
-    const auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(now).count();
-    std::scoped_lock lock{joystick_map_mutex};
-    for (const auto& [guid, joystick_list] : joystick_map) {
-        for (const auto& joystick : joystick_list) {
-            if (const auto pad = joystick->GetRenHDrum()) {
-                pad->Tick(now_us);
+    // RenHDrum paces HD Rumble packets itself; due ones go out here. The pads are ticked after
+    // the map lock is released: a tick calls into SDL, and SDL's controller-added callback can
+    // hold the SDL joystick lock while it waits for the map lock.
+    std::vector<std::shared_ptr<RenHDrumPad>> pads;
+    {
+        std::scoped_lock lock{joystick_map_mutex};
+        for (const auto& [guid, joystick_list] : joystick_map) {
+            for (const auto& joystick : joystick_list) {
+                if (auto pad = joystick->GetRenHDrum()) {
+                    pads.push_back(std::move(pad));
+                }
             }
         }
+    }
+    if (pads.empty()) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    const auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(now).count();
+    for (const auto& pad : pads) {
+        pad->Tick(now_us);
     }
 }
 

@@ -159,26 +159,29 @@ float ShapeAmplitude(float amplitude, const UserSettings& u) {
 
 } // namespace
 
+// Lock rule: `mutex` is never held while calling an SDL function that takes the SDL joystick lock
+// (SDL_SendJoystickEffect, SDL_HDRumbleSet*, SDL_GetJoystickConnectionState, SDL_Rumble*). SDL
+// runs the joystick-removed event watcher under that lock, and Shutdown() takes `mutex` from
+// there. The joystick pointer is copied out and used after unlocking: SDL3 validates joystick
+// handles, so a call on one closed meanwhile only fails.
 struct RenHDrumPad::Impl {
-    SDL_Joystick* joystick{};
-    SDL_Gamepad* gamepad{};
     bool is_bluetooth{};
 
-    // Guards everything below. Never held while SDL_SendJoystickEffect runs on the HLE thread.
     mutable std::mutex mutex;
+    SDL_Joystick* joystick{};
+    SDL_Gamepad* gamepad{};
     RenHdcEngine* engine{};
     RenHdcDualSenseDsp* dsp{};
     SDL_AudioStream* audio_stream{};
     bool audio_inited{};
+    bool audio_opening{};
     int audio_attempts{};
     std::int64_t audio_next_us{};
     UserSettings user{};
 
-    // Ryuhdr's recommended mode (0.2.6) with the user's choices from the HD Rumble dialog. The SDL
-    // transport modes are switched on where SDL has them; a mode SDL refused is cleared, so the
-    // engine never paces for writes that SDL does not gate.
-    void ApplyEngineSettings() {
-        const auto& api = Api();
+    /// Engine settings from the user's choices (Ryuhdr 0.2.6's recommended mode by default).
+    /// Caller holds the mutex.
+    bool ResolveEngineSettings(RenHdcSettings& settings) const {
         RenHdcConfig config{};
         config.enable_hd_rumble = user.hd_enabled;
         config.hd_rumble_usb_interval_ms = user.usb_interval_ms;
@@ -192,40 +195,62 @@ struct RenHDrumPad::Impl {
         config.hd_rumble_experimental_bt_after_input = user.bt_after_input;
         config.hd_rumble_experimental_bt_fast = user.bt_fast;
         config.hd_rumble_experimental_bt_crisp_notes = user.bt_crisp_notes;
+        return Api().settings_resolve(&config, &settings) == RENHDRUM_OK;
+    }
 
-        RenHdcSettings settings{};
-        if (api.settings_resolve(&config, &settings) != RENHDRUM_OK) {
-            return;
-        }
-
+    /// Switches SDL's HD Rumble transport modes to match `settings`, then clears the modes SDL
+    /// refused, so the engine never paces for writes SDL does not gate. Called without the mutex.
+    void ApplyTransportModes(SDL_Joystick* js, RenHdcSettings& settings) const {
 #ifdef RENHDRUM_SDL_HDRUMBLE
-        SDL_HDRumbleSetNoQueue(joystick, 0, 0, 0);
-        SDL_HDRumbleSetNoQueueBluetooth(joystick, 0, 0);
-        SDL_HDRumbleSetBluetoothAfterInput(joystick, 0);
+        SDL_HDRumbleSetNoQueue(js, 0, 0, 0);
+        SDL_HDRumbleSetNoQueueBluetooth(js, 0, 0);
+        SDL_HDRumbleSetBluetoothAfterInput(js, 0);
         if (is_bluetooth) {
             // B3 needs B1 on; SDL never runs both on one pad, B3 wins
-            settings.bt_fast =
-                settings.enabled && settings.bt_fast && settings.bt_after_input &&
-                SDL_HDRumbleSetNoQueueBluetooth(joystick, 1, NoQueueEnvelopeGapMs) == 1;
+            settings.bt_fast = settings.enabled && settings.bt_fast && settings.bt_after_input &&
+                               SDL_HDRumbleSetNoQueueBluetooth(js, 1, NoQueueEnvelopeGapMs) == 1;
             settings.bt_after_input = settings.enabled && settings.bt_after_input &&
                                       !settings.bt_fast &&
-                                      SDL_HDRumbleSetBluetoothAfterInput(joystick, 1) == 1;
+                                      SDL_HDRumbleSetBluetoothAfterInput(js, 1) == 1;
             settings.usb_no_queue = false;
         } else {
             const int gap_ms =
                 settings.envelope_5ms ? NoQueueEnvelopeGapMs : settings.usb_interval_ms;
             settings.usb_no_queue =
                 settings.enabled && settings.usb_no_queue &&
-                SDL_HDRumbleSetNoQueue(joystick, 1, gap_ms, settings.usb_pause_ms) == 1;
+                SDL_HDRumbleSetNoQueue(js, 1, gap_ms, settings.usb_pause_ms) == 1;
             settings.bt_after_input = false;
             settings.bt_fast = false;
         }
 #else
         // Stock SDL queues every write; the engine paces by its clock.
+        (void)js;
         settings.usb_no_queue = false;
         settings.bt_after_input = false;
         settings.bt_fast = false;
 #endif
+    }
+
+    /// Resolves the settings, switches the SDL modes and hands the result to the engine.
+    /// Called without the mutex.
+    void ConfigureEngine() {
+        RenHdcSettings settings{};
+        SDL_Joystick* js = nullptr;
+        {
+            std::scoped_lock lock{mutex};
+            if (!engine || !joystick || !ResolveEngineSettings(settings)) {
+                return;
+            }
+            js = joystick;
+        }
+        ApplyTransportModes(js, settings);
+        {
+            std::scoped_lock lock{mutex};
+            if (!engine) {
+                return;
+            }
+            Api().engine_apply_settings(engine, &settings);
+        }
         if (is_bluetooth) {
             LOG_INFO(Input, "RenHDrum HD Rumble Bluetooth: level {}, {}{}", settings.bluetooth_level,
                      settings.bt_fast          ? "5 ms envelope while SDL is idle"
@@ -239,59 +264,104 @@ struct RenHDrumPad::Impl {
                      envelope ? ", 5 ms envelope" : "",
                      envelope && settings.crisp_notes ? ", crisp notes" : "");
         }
-        api.engine_apply_settings(engine, &settings);
     }
 
-    // Caller holds the mutex. Picks up changes made in the HD Rumble dialog.
-    void RefreshUserSettings() {
+    struct SettingsChange {
+        bool reconfigure_engine{};
+        bool stop_engine{};
+    };
+
+    /// Picks up changes made in the HD Rumble dialog. Caller holds the mutex; the returned SDL
+    /// work is done after unlocking.
+    SettingsChange RefreshUserSettings() {
         const UserSettings now = ReadUserSettings();
         if (now == user) {
-            return;
+            return {};
         }
         const UserSettings old = user;
         user = now;
-        const auto& api = Api();
-        if (engine) {
-            if (old.hd_enabled && !now.hd_enabled) {
-                SDL_SendJoystickEffect(joystick, NeutralPacket.data(),
-                                      static_cast<int>(NeutralPacket.size()));
-            }
-            ApplyEngineSettings();
-        }
         if (dsp && (old.dualsense_volume != now.dualsense_volume ||
                     old.dualsense_crisp_notes != now.dualsense_crisp_notes)) {
-            // The audio callback runs with the stream locked, so it never sees a freed DSP.
+            // The audio callback runs with the stream locked, so it never sees a freed DSP. The
+            // audio stream lock is not the joystick lock, and the callback never takes `mutex`.
             if (audio_stream) {
                 SDL_LockAudioStream(audio_stream);
             }
+            const auto& api = Api();
             api.dsp_destroy(dsp);
             dsp = api.dsp_create(now.dualsense_volume, now.dualsense_crisp_notes);
             if (audio_stream) {
                 SDL_UnlockAudioStream(audio_stream);
             }
         }
+        return {
+            .reconfigure_engine = engine != nullptr,
+            .stop_engine = engine != nullptr && old.hd_enabled && !now.hd_enabled,
+        };
     }
 
-    // Caller holds the mutex. The DualSense exposes its voice coils as a 4-channel USB audio
-    // device that Windows may list a moment after the HID device, hence the retries.
-    void TryOpenDualSenseAudio() {
-        if (!dsp || audio_stream) {
-            return;
-        }
-        ++audio_attempts;
-        if (SDL_GetJoystickConnectionState(joystick) == SDL_JOYSTICK_CONNECTION_WIRELESS) {
-            audio_attempts = DualSenseAudioMaxAttempts;
-            LOG_INFO(Input, "RenHDrum: DualSense on Bluetooth, using the standard rumble");
-            return;
-        }
-        if (!SDL_WasInit(SDL_INIT_AUDIO)) {
-            if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
-                LOG_WARNING(Input, "RenHDrum: SDL audio init failed: {}", SDL_GetError());
+    /// The DualSense exposes its voice coils as a 4-channel USB audio device that Windows may
+    /// list a moment after the HID device, hence the retries. Called without the mutex.
+    void OpenDualSenseAudio() {
+        SDL_Joystick* js = nullptr;
+        SDL_Gamepad* gp = nullptr;
+        {
+            std::scoped_lock lock{mutex};
+            if (!dsp || !joystick || audio_stream || audio_opening) {
                 return;
             }
-            audio_inited = true;
+            audio_opening = true;
+            ++audio_attempts;
+            js = joystick;
+            gp = gamepad;
         }
+        // SDL counts subsystem references: every pad with a stream holds one, so one pad going
+        // away does not stop another's audio.
+        SDL_AudioStream* stream = nullptr;
+        const bool inited = SDL_InitSubSystem(SDL_INIT_AUDIO);
+        if (inited) {
+            stream = OpenDualSenseAudioStream(js);
+        } else {
+            LOG_WARNING(Input, "RenHDrum: SDL audio init failed: {}", SDL_GetError());
+        }
+        bool opened = false;
+        {
+            std::scoped_lock lock{mutex};
+            audio_opening = false;
+            if (stream && joystick && dsp && !audio_stream) {
+                audio_stream = stream;
+                audio_inited = true;
+                opened = true;
+            }
+        }
+        if (!opened) {
+            // No device yet, or shut down while opening
+            if (stream) {
+                SDL_DestroyAudioStream(stream);
+            }
+            if (inited) {
+                SDL_QuitSubSystem(SDL_INIT_AUDIO);
+            }
+        }
+        if (opened) {
+            // Stop SDL's HID rumble once so the pad plays the audio haptics
+            if (gp) {
+                SDL_RumbleGamepad(gp, 0, 0, 0);
+            } else {
+                SDL_RumbleJoystick(js, 0, 0, 0);
+            }
+        }
+    }
 
+    /// Finds the DualSense audio device and opens a playing stream on it, or nullptr. Called
+    /// without the mutex, with the SDL audio subsystem initialized.
+    SDL_AudioStream* OpenDualSenseAudioStream(SDL_Joystick* js) {
+        if (SDL_GetJoystickConnectionState(js) == SDL_JOYSTICK_CONNECTION_WIRELESS) {
+            std::scoped_lock lock{mutex};
+            audio_attempts = DualSenseAudioMaxAttempts;
+            LOG_INFO(Input, "RenHDrum: DualSense on Bluetooth, using the standard rumble");
+            return nullptr;
+        }
         int count = 0;
         SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&count);
         SDL_AudioDeviceID matched = 0;
@@ -309,8 +379,8 @@ struct RenHDrumPad::Impl {
         }
         SDL_free(devices);
         if (matched == 0) {
-            LOG_DEBUG(Input, "RenHDrum: no DualSense audio device yet (attempt {})", audio_attempts);
-            return;
+            LOG_DEBUG(Input, "RenHDrum: no DualSense audio device yet");
+            return nullptr;
         }
 
         const SDL_AudioSpec spec{
@@ -318,20 +388,15 @@ struct RenHDrumPad::Impl {
             .channels = 4,
             .freq = 48000,
         };
-        audio_stream = SDL_OpenAudioDeviceStream(matched, &spec, &AudioCallback, this);
-        if (!audio_stream) {
+        SDL_AudioStream* stream = SDL_OpenAudioDeviceStream(matched, &spec, &AudioCallback, this);
+        if (!stream) {
             LOG_WARNING(Input, "RenHDrum: could not open the DualSense audio device: {}",
                         SDL_GetError());
-            return;
+            return nullptr;
         }
-        SDL_ResumeAudioStreamDevice(audio_stream);
-        // Stop SDL's HID rumble once so the pad plays the audio haptics
-        if (gamepad) {
-            SDL_RumbleGamepad(gamepad, 0, 0, 0);
-        } else {
-            SDL_RumbleJoystick(joystick, 0, 0, 0);
-        }
+        SDL_ResumeAudioStreamDevice(stream);
         LOG_INFO(Input, "RenHDrum: DualSense haptics on \"{}\"", SDL_GetAudioDeviceName(matched));
+        return stream;
     }
 
     static void SDLCALL AudioCallback(void* userdata, SDL_AudioStream* stream,
@@ -355,12 +420,12 @@ struct RenHDrumPad::Impl {
         }
     }
 
-    // Caller holds the mutex.
-    void Release() {
+    /// Frees the engine, the DSP and the audio stream. Caller holds the mutex. Returns whether
+    /// an engine was running, so the caller sends the neutral packet after unlocking.
+    bool Release() {
         const auto& api = Api();
         if (audio_stream) {
-            SDL_PauseAudioStreamDevice(audio_stream);
-            SDL_ClearAudioStream(audio_stream);
+            // Waits for a running audio callback; the callback never takes `mutex`
             SDL_DestroyAudioStream(audio_stream);
             audio_stream = nullptr;
         }
@@ -368,9 +433,8 @@ struct RenHDrumPad::Impl {
             SDL_QuitSubSystem(SDL_INIT_AUDIO);
             audio_inited = false;
         }
+        const bool had_engine = engine != nullptr;
         if (engine) {
-            SDL_SendJoystickEffect(joystick, NeutralPacket.data(),
-                                      static_cast<int>(NeutralPacket.size()));
             api.engine_destroy(engine);
             engine = nullptr;
         }
@@ -378,8 +442,13 @@ struct RenHDrumPad::Impl {
             api.dsp_destroy(dsp);
             dsp = nullptr;
         }
+        return had_engine;
     }
 };
+
+static void SendNeutralPacket(SDL_Joystick* joystick) {
+    SDL_SendJoystickEffect(joystick, NeutralPacket.data(), static_cast<int>(NeutralPacket.size()));
+}
 
 bool IsRenHDrumBuilt() {
     return true;
@@ -400,6 +469,7 @@ std::shared_ptr<RenHDrumPad> RenHDrumPad::Create(SDL_Joystick* joystick, SDL_Gam
         return nullptr;
     }
 
+    // Not shared yet: no other thread can reach `state` until it is returned.
     const auto& api = Api();
     auto state = std::make_unique<Impl>();
     state->joystick = joystick;
@@ -407,8 +477,6 @@ std::shared_ptr<RenHDrumPad> RenHDrumPad::Create(SDL_Joystick* joystick, SDL_Gam
     state->is_bluetooth =
         SDL_GetJoystickConnectionState(joystick) == SDL_JOYSTICK_CONNECTION_WIRELESS;
     state->user = ReadUserSettings();
-
-    std::scoped_lock lock{state->mutex};
     if (switch_pad) {
         state->engine = api.engine_create(state->is_bluetooth, pid == 0x2009);
         if (!state->engine) {
@@ -416,14 +484,14 @@ std::shared_ptr<RenHDrumPad> RenHDrumPad::Create(SDL_Joystick* joystick, SDL_Gam
         }
         LOG_INFO(Input, "RenHDrum: HD Rumble for {:04X}:{:04X} (Bluetooth: {})", vid, pid,
                  state->is_bluetooth);
-        state->ApplyEngineSettings();
+        state->ConfigureEngine();
     } else {
         state->dsp = api.dsp_create(state->user.dualsense_volume, state->user.dualsense_crisp_notes);
         if (!state->dsp) {
             return nullptr;
         }
         LOG_INFO(Input, "RenHDrum: DualSense haptics for {:04X}:{:04X}", vid, pid);
-        state->TryOpenDualSenseAudio();
+        state->OpenDualSenseAudio();
     }
     return std::shared_ptr<RenHDrumPad>(new RenHDrumPad(std::move(state)));
 }
@@ -435,11 +503,20 @@ RenHDrumPad::~RenHDrumPad() {
 }
 
 void RenHDrumPad::Shutdown() {
-    std::scoped_lock lock{impl->mutex};
-    if (impl->joystick) {
-        impl->Release();
+    SDL_Joystick* joystick = nullptr;
+    bool had_engine = false;
+    {
+        std::scoped_lock lock{impl->mutex};
+        if (!impl->joystick) {
+            return;
+        }
+        joystick = impl->joystick;
+        had_engine = impl->Release();
         impl->joystick = nullptr;
         impl->gamepad = nullptr;
+    }
+    if (had_engine) {
+        SendNeutralPacket(joystick);
     }
 }
 
@@ -450,53 +527,80 @@ bool RenHDrumPad::IsActive() const {
 
 bool RenHDrumPad::Vibrate(std::int64_t now_us, bool is_right,
                           const Common::Input::VibrationStatus& status) {
+    Impl::SettingsChange change{};
+    SDL_Joystick* joystick = nullptr;
+    bool handled = false;
+    bool engine_sample = false;
     {
         std::scoped_lock lock{impl->mutex};
         if (!impl->joystick) {
             return false;
         }
-        impl->RefreshUserSettings();
+        joystick = impl->joystick;
+        change = impl->RefreshUserSettings();
         const auto& u = impl->user;
-        if (!u.hd_enabled) {
-            return false;
-        }
-        const float low = ShapeAmplitude(status.low_amplitude, u);
-        const float high = ShapeAmplitude(status.high_amplitude, u);
         const auto& api = Api();
-        if (!impl->engine) {
-            if (!impl->dsp || !u.dualsense_enabled) {
-                return false;
+        if (impl->engine) {
+            if (u.hd_enabled) {
+                api.engine_push_half_sample(impl->engine, now_us, is_right,
+                                            ShapeAmplitude(status.low_amplitude, u),
+                                            status.low_frequency,
+                                            ShapeAmplitude(status.high_amplitude, u),
+                                            status.high_frequency);
+                handled = true;
+                engine_sample = true;
             }
-            api.dsp_set_half_target(impl->dsp, is_right, low, status.low_frequency, high,
-                                    status.high_frequency);
-            return impl->audio_stream != nullptr;
+        } else if (impl->dsp) {
+            if (u.hd_enabled && u.dualsense_enabled) {
+                api.dsp_set_half_target(impl->dsp, is_right,
+                                        ShapeAmplitude(status.low_amplitude, u),
+                                        status.low_frequency,
+                                        ShapeAmplitude(status.high_amplitude, u),
+                                        status.high_frequency);
+                handled = impl->audio_stream != nullptr;
+            } else {
+                // Haptics off: silence the voice coils, the standard rumble takes over
+                api.dsp_set_half_target(impl->dsp, is_right, 0.0f, status.low_frequency, 0.0f,
+                                        status.high_frequency);
+            }
         }
-        api.engine_push_half_sample(impl->engine, now_us, is_right, low, status.low_frequency,
-                                    high, status.high_frequency);
     }
-    Tick(now_us);
-    return true;
+    if (change.stop_engine) {
+        SendNeutralPacket(joystick);
+    }
+    if (change.reconfigure_engine) {
+        impl->ConfigureEngine();
+    }
+    if (engine_sample) {
+        Tick(now_us);
+    }
+    return handled;
 }
 
 void RenHDrumPad::Tick(std::int64_t now_us) {
     std::array<Uint8, 10> packet{};
     SDL_Joystick* joystick = nullptr;
+    bool open_audio = false;
+    bool send = false;
     {
         std::scoped_lock lock{impl->mutex};
         if (!impl->joystick) {
             return;
         }
-        if (impl->dsp && !impl->audio_stream && impl->audio_attempts < DualSenseAudioMaxAttempts &&
-            now_us >= impl->audio_next_us) {
-            impl->audio_next_us = now_us + 2'000'000;
-            impl->TryOpenDualSenseAudio();
-        }
-        if (!impl->engine || Api().engine_tick(impl->engine, now_us, packet.data()) != 1) {
-            return;
-        }
         joystick = impl->joystick;
+        if (impl->dsp && !impl->audio_stream && !impl->audio_opening &&
+            impl->audio_attempts < DualSenseAudioMaxAttempts && now_us >= impl->audio_next_us) {
+            impl->audio_next_us = now_us + 2'000'000;
+            open_audio = true;
+        }
+        send = impl->engine && Api().engine_tick(impl->engine, now_us, packet.data()) == 1;
     }
-    SDL_SendJoystickEffect(joystick, packet.data(), static_cast<int>(packet.size()));
+    if (open_audio) {
+        impl->OpenDualSenseAudio();
+    }
+    if (send) {
+        SDL_SendJoystickEffect(joystick, packet.data(), static_cast<int>(packet.size()));
+    }
 }
 
 } // namespace InputCommon
