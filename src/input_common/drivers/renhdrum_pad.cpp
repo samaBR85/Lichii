@@ -332,6 +332,10 @@ struct RenHDrumPad::Impl {
                 audio_stream = stream;
                 audio_inited = true;
                 opened = true;
+                // Start only once published: from here on, the DSP is replaced or freed only
+                // under SDL_LockAudioStream or after SDL_DestroyAudioStream. The callback never
+                // takes `mutex`.
+                SDL_ResumeAudioStreamDevice(stream);
             }
         }
         if (!opened) {
@@ -353,8 +357,9 @@ struct RenHDrumPad::Impl {
         }
     }
 
-    /// Finds the DualSense audio device and opens a playing stream on it, or nullptr. Called
-    /// without the mutex, with the SDL audio subsystem initialized.
+    /// Finds the DualSense audio device and opens a stream on it, paused until it is published
+    /// in `audio_stream`, or nullptr. Called without the mutex, with the SDL audio subsystem
+    /// initialized.
     SDL_AudioStream* OpenDualSenseAudioStream(SDL_Joystick* js) {
         if (SDL_GetJoystickConnectionState(js) == SDL_JOYSTICK_CONNECTION_WIRELESS) {
             std::scoped_lock lock{mutex};
@@ -394,7 +399,6 @@ struct RenHDrumPad::Impl {
                         SDL_GetError());
             return nullptr;
         }
-        SDL_ResumeAudioStreamDevice(stream);
         LOG_INFO(Input, "RenHDrum: DualSense haptics on \"{}\"", SDL_GetAudioDeviceName(matched));
         return stream;
     }
