@@ -7,15 +7,18 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <thread>
 
 #include <renhdrum.h>
 
 #include "common/dynamic_library.h"
 #include "common/logging.h"
 #include "common/settings.h"
+#include "common/thread.h"
 
 #ifdef RENHDRUM_SDL_HDRUMBLE
 // Added by .patch/sdl3-hdrumble/0002-hdrumble-idle-write.patch (SDL3 is linked statically). Each
@@ -45,6 +48,8 @@ struct RenHDrumApi {
     decltype(&renhdrum_dualsense_dsp_destroy) dsp_destroy{};
     decltype(&renhdrum_dualsense_dsp_set_half_target) dsp_set_half_target{};
     decltype(&renhdrum_dualsense_dsp_fill_f32) dsp_fill_f32{};
+    // Optional (RenHDrum 0.2.1+): DualSense haptics over Bluetooth
+    decltype(&renhdrum_dualsense_dsp_build_bt_report) dsp_build_bt_report{};
 
     Common::DynamicLibrary library;
     bool loaded{};
@@ -78,6 +83,9 @@ const RenHDrumApi& Api() {
                                        &a.dsp_set_half_target) &&
                    a.library.GetSymbol("renhdrum_dualsense_dsp_fill_f32", &a.dsp_fill_f32);
         if (a.loaded) {
+            // Optional: a missing symbol leaves it null
+            (void)a.library.GetSymbol("renhdrum_dualsense_dsp_build_bt_report",
+                                      &a.dsp_build_bt_report);
             LOG_INFO(Input, "RenHDrum: loaded {}", name);
         } else {
             LOG_WARNING(Input, "RenHDrum: {} is missing functions, using the standard rumble", name);
@@ -164,6 +172,10 @@ float ShapeAmplitude(float amplitude, const UserSettings& u) {
 // runs the joystick-removed event watcher under that lock, and Shutdown() takes `mutex` from
 // there. The joystick pointer is copied out and used after unlocking: SDL3 validates joystick
 // handles, so a call on one closed meanwhile only fails.
+//
+// A DualSense on Bluetooth has no audio endpoint. A thread of its own sends the haptics as HID
+// output report 0x32 on a second handle to the pad. That thread never takes `mutex`; it holds
+// `bt_dsp_mutex` while it reads the DSP, and the DSP is replaced only under that lock too.
 struct RenHDrumPad::Impl {
     bool is_bluetooth{};
 
@@ -178,6 +190,11 @@ struct RenHDrumPad::Impl {
     int audio_attempts{};
     std::int64_t audio_next_us{};
     UserSettings user{};
+
+    std::mutex bt_dsp_mutex;
+    SDL_hid_device* bt_hid{};
+    std::thread bt_thread;
+    std::atomic<bool> bt_running{};
 
     /// Engine settings from the user's choices (Ryuhdr 0.2.6's recommended mode by default).
     /// Caller holds the mutex.
@@ -287,9 +304,12 @@ struct RenHDrumPad::Impl {
             if (audio_stream) {
                 SDL_LockAudioStream(audio_stream);
             }
-            const auto& api = Api();
-            api.dsp_destroy(dsp);
-            dsp = api.dsp_create(now.dualsense_volume, now.dualsense_crisp_notes);
+            {
+                std::scoped_lock bt_lock{bt_dsp_mutex};
+                const auto& api = Api();
+                api.dsp_destroy(dsp);
+                dsp = api.dsp_create(now.dualsense_volume, now.dualsense_crisp_notes);
+            }
             if (audio_stream) {
                 SDL_UnlockAudioStream(audio_stream);
             }
@@ -310,10 +330,19 @@ struct RenHDrumPad::Impl {
             if (!dsp || !joystick || audio_stream || audio_opening) {
                 return;
             }
-            audio_opening = true;
-            ++audio_attempts;
+            if (is_bluetooth) {
+                // No audio endpoint on Bluetooth: one try at the HID haptics, no retries
+                audio_attempts = DualSenseAudioMaxAttempts;
+            } else {
+                audio_opening = true;
+                ++audio_attempts;
+            }
             js = joystick;
             gp = gamepad;
+        }
+        if (is_bluetooth) {
+            StartDualSenseBluetooth(js, gp);
+            return;
         }
         // SDL counts subsystem references: every pad with a stream holds one, so one pad going
         // away does not stop another's audio.
@@ -365,16 +394,103 @@ struct RenHDrumPad::Impl {
         }
     }
 
+    /// Opens a second HID handle on a Bluetooth DualSense and starts the report 0x32 sender.
+    /// Called without the mutex. Without the 0.2.1 function or a HID path, the standard rumble
+    /// stays.
+    void StartDualSenseBluetooth(SDL_Joystick* js, SDL_Gamepad* gp) {
+        if (!Api().dsp_build_bt_report) {
+            LOG_INFO(Input, "RenHDrum: DualSense on Bluetooth needs RenHDrum 0.2.1 or newer, "
+                            "using the standard rumble");
+            return;
+        }
+        const char* path = SDL_GetJoystickPath(js);
+        if (!path || !*path) {
+            LOG_INFO(Input, "RenHDrum: DualSense on Bluetooth has no HID path, using the "
+                            "standard rumble");
+            return;
+        }
+        const std::string hid_path{path};
+        SDL_hid_device* hid = SDL_hid_open_path(hid_path.c_str());
+        if (!hid) {
+            LOG_WARNING(Input,
+                        "RenHDrum: could not open the DualSense HID path: {}, using the "
+                        "standard rumble",
+                        SDL_GetError());
+            return;
+        }
+        {
+            std::scoped_lock lock{mutex};
+            if (!joystick || !dsp || bt_hid) {
+                SDL_hid_close(hid);
+                return;
+            }
+            bt_hid = hid;
+            bt_running.store(true);
+            bt_thread = std::thread([this] { DualSenseBluetoothLoop(); });
+        }
+        // Stop SDL's HID rumble once so the pad plays the haptics
+        if (gp) {
+            SDL_RumbleGamepad(gp, 0, 0, 0);
+        } else {
+            SDL_RumbleJoystick(js, 0, 0, 0);
+        }
+        LOG_INFO(Input, "RenHDrum: DualSense haptics over Bluetooth (report 0x32)");
+    }
+
+    /// Runs on `bt_thread`: one report every RENHDRUM_DS5_BT_PERIOD_NS while vibrating and for
+    /// 2 s after, then quiet on the radio. Stops after about 0.5 s of failed writes, which hands
+    /// the vibration back to the standard rumble.
+    void DualSenseBluetoothLoop() {
+        Common::SetCurrentThreadName("RenHDrumDS5BT");
+        constexpr Uint64 KeepSendingNs = 2'000'000'000ULL;
+        constexpr Uint64 ResyncNs = 100'000'000ULL;
+        constexpr int MaxFailsInRow = 50;
+        const auto& api = Api();
+        std::array<std::uint8_t, RENHDRUM_DS5_BT_REPORT_SIZE> report{};
+        Uint64 next = SDL_GetTicksNS();
+        Uint64 last_signal = 0;
+        int fails_in_row = 0;
+        while (bt_running.load()) {
+            next += RENHDRUM_DS5_BT_PERIOD_NS;
+            int built = -1;
+            {
+                std::scoped_lock lock{bt_dsp_mutex};
+                if (dsp) {
+                    built = api.dsp_build_bt_report(dsp, RENHDRUM_DS5_BT_BUFFER_LENGTH_DEFAULT,
+                                                    report.data());
+                }
+            }
+            const Uint64 now = SDL_GetTicksNS();
+            if (built == 1) {
+                last_signal = now;
+            }
+            if (built >= 0 && last_signal != 0 && now - last_signal < KeepSendingNs) {
+                if (SDL_hid_write(bt_hid, report.data(), report.size()) < 0) {
+                    ++fails_in_row;
+                } else {
+                    fails_in_row = 0;
+                }
+            }
+            if (fails_in_row >= MaxFailsInRow) {
+                LOG_WARNING(Input,
+                            "RenHDrum: DualSense Bluetooth writes failing ({}), using the "
+                            "standard rumble",
+                            SDL_GetError());
+                break;
+            }
+            if (next > now) {
+                SDL_DelayPrecise(next - now);
+            } else if (now - next > ResyncNs) {
+                next = now; // stalled: resync instead of bursting
+            }
+        }
+        bt_running.store(false);
+    }
+
     /// Finds the DualSense audio device and opens a stream on it, paused until it is published
     /// in `audio_stream`, or nullptr. Called without the mutex, with the SDL audio subsystem
     /// initialized.
     SDL_AudioStream* OpenDualSenseAudioStream(SDL_Joystick* js) {
-        if (SDL_GetJoystickConnectionState(js) == SDL_JOYSTICK_CONNECTION_WIRELESS) {
-            std::scoped_lock lock{mutex};
-            audio_attempts = DualSenseAudioMaxAttempts;
-            LOG_INFO(Input, "RenHDrum: DualSense on Bluetooth, using the standard rumble");
-            return nullptr;
-        }
         int count = 0;
         SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&count);
         SDL_AudioDeviceID matched = 0;
@@ -436,6 +552,15 @@ struct RenHDrumPad::Impl {
     /// an engine was running, so the caller sends the neutral packet after unlocking.
     bool Release() {
         const auto& api = Api();
+        // The sender never takes `mutex`, so joining here cannot deadlock
+        bt_running.store(false);
+        if (bt_thread.joinable()) {
+            bt_thread.join();
+        }
+        if (bt_hid) {
+            SDL_hid_close(bt_hid);
+            bt_hid = nullptr;
+        }
         if (audio_stream) {
             // Waits for a running audio callback; the callback never takes `mutex`
             SDL_DestroyAudioStream(audio_stream);
@@ -534,7 +659,7 @@ void RenHDrumPad::Shutdown() {
 
 bool RenHDrumPad::IsActive() const {
     std::scoped_lock lock{impl->mutex};
-    return impl->engine || (impl->dsp && impl->audio_stream);
+    return impl->engine || (impl->dsp && (impl->audio_stream || impl->bt_running.load()));
 }
 
 bool RenHDrumPad::Vibrate(std::int64_t now_us, bool is_right,
@@ -569,7 +694,7 @@ bool RenHDrumPad::Vibrate(std::int64_t now_us, bool is_right,
                                         status.low_frequency,
                                         ShapeAmplitude(status.high_amplitude, u),
                                         status.high_frequency);
-                handled = impl->audio_stream != nullptr;
+                handled = impl->audio_stream != nullptr || impl->bt_running.load();
             } else {
                 // Haptics off: silence the voice coils, the standard rumble takes over
                 api.dsp_set_half_target(impl->dsp, is_right, 0.0f, status.low_frequency, 0.0f,
