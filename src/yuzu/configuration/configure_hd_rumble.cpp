@@ -105,7 +105,13 @@ ConfigureHdRumble::ConfigureHdRumble(QWidget* parent) : QDialog(parent) {
     pages->addWidget(CreateDualSensePage());
     pages->addWidget(CreateXboxPage());
     connect(page_list, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
-    page_list->setCurrentRow(0);
+    // Open on the page of the controller in use, marked as connected
+    const int connected = InputCommon::GetRenHDrumConnectedKind();
+    if (connected >= 0 && connected < page_list->count()) {
+        auto* item = page_list->item(connected);
+        item->setText(tr("%1 (connected)").arg(item->text()));
+    }
+    page_list->setCurrentRow(connected >= 0 ? connected : 0);
     body->addWidget(page_list);
     body->addWidget(pages, 1);
     root->addLayout(body, 1);
@@ -130,6 +136,7 @@ ConfigureHdRumble::ConfigureHdRumble(QWidget* parent) : QDialog(parent) {
 
     connect(hd_enabled, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
     connect(ds_enabled, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
+    connect(xbox_enabled, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
     connect(envelope_5ms, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
 
     LoadConfiguration();
@@ -228,7 +235,23 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
     auto* form = new QFormLayout(group);
     xbox_enabled = new QCheckBox(tr("Use RenHDrum's Xbox rumble"));
     xbox_enabled->setToolTip(tr("Off: Xbox controllers use the emulator's standard rumble."));
+    xbox_strength_slider = new QSlider(Qt::Horizontal);
+    xbox_strength_slider->setRange(25, 1000);
+    xbox_strength = new QSpinBox;
+    xbox_strength->setRange(25, 1000);
+    xbox_strength->setToolTip(
+        tr("Scales what reaches the motors, after Intensity. RenHDrum's mix was tuned on the Xbox "
+           "One S and uses little of the range, so controllers with weaker motors may need "
+           "300-800%."));
+    connect(xbox_strength_slider, &QSlider::valueChanged, xbox_strength, &QSpinBox::setValue);
+    connect(xbox_strength, qOverload<int>(&QSpinBox::valueChanged), xbox_strength_slider,
+            &QSlider::setValue);
+    auto* strength_row = new QHBoxLayout;
+    strength_row->addWidget(xbox_strength_slider, 1);
+    strength_row->addWidget(xbox_strength);
+    strength_row->addWidget(new QLabel(QStringLiteral("%")));
     form->addRow(xbox_enabled);
+    form->addRow(tr("Motor strength"), strength_row);
     layout->addWidget(group);
 
     layout->addWidget(MakeNote(
@@ -257,6 +280,7 @@ void ConfigureHdRumble::LoadConfiguration() {
     ds_volume->setValue(std::clamp(s.dualsense_haptics_volume.GetValue(), 0, 100));
     ds_crisp_notes->setChecked(s.dualsense_crisp_notes.GetValue());
     xbox_enabled->setChecked(s.xbox_rumble_enabled.GetValue());
+    xbox_strength->setValue(s.xbox_motor_strength.GetValue());
     UpdateEnabledState();
 }
 
@@ -276,6 +300,7 @@ void ConfigureHdRumble::RestoreDefaults() {
     ds_volume->setValue(100);
     ds_crisp_notes->setChecked(true);
     xbox_enabled->setChecked(true);
+    xbox_strength->setValue(100);
     UpdateEnabledState();
 }
 
@@ -289,6 +314,8 @@ void ConfigureHdRumble::UpdateEnabledState() {
     ds_volume_slider->setEnabled(ds_enabled->isChecked());
     ds_volume->setEnabled(ds_enabled->isChecked());
     ds_crisp_notes->setEnabled(ds_enabled->isChecked());
+    xbox_strength_slider->setEnabled(xbox_enabled->isChecked());
+    xbox_strength->setEnabled(xbox_enabled->isChecked());
 }
 
 void ConfigureHdRumble::ApplyConfiguration() {
@@ -310,4 +337,5 @@ void ConfigureHdRumble::ApplyConfiguration() {
     s.dualsense_haptics_volume.SetValue(ds_volume->value());
     s.dualsense_crisp_notes.SetValue(ds_crisp_notes->isChecked());
     s.xbox_rumble_enabled.SetValue(xbox_enabled->isChecked());
+    s.xbox_motor_strength.SetValue(xbox_strength->value());
 }

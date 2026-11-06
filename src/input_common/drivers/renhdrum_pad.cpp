@@ -150,6 +150,7 @@ struct UserSettings {
     int dualsense_volume{100};
     bool dualsense_crisp_notes{true};
     bool xbox_enabled{true};
+    int xbox_strength{100};
     int gain{100};
     int low_boost{0};
     bool operator==(const UserSettings&) const = default;
@@ -171,6 +172,7 @@ UserSettings ReadUserSettings() {
         .dualsense_volume = std::clamp(s.dualsense_haptics_volume.GetValue(), 0, 100),
         .dualsense_crisp_notes = s.dualsense_crisp_notes.GetValue(),
         .xbox_enabled = s.xbox_rumble_enabled.GetValue(),
+        .xbox_strength = std::clamp(s.xbox_motor_strength.GetValue(), 25, 1000),
         .gain = std::clamp(s.hd_rumble_gain.GetValue(), 25, 1000),
         .low_boost = std::clamp(s.hd_rumble_low_boost.GetValue(), 0, 100),
     };
@@ -193,6 +195,10 @@ float ShapeAmplitude(float amplitude, const UserSettings& u) {
     return std::pow(x, exponent);
 }
 
+// Controllers RenHDrum drives, per kind, for the settings dialog
+std::array<std::atomic<int>, 3> connected_count{};
+std::atomic<int> last_connected_kind{-1};
+
 } // namespace
 
 // Lock rule: `mutex` is never held while calling an SDL function that takes the SDL joystick lock
@@ -206,6 +212,7 @@ float ShapeAmplitude(float amplitude, const UserSettings& u) {
 // `bt_dsp_mutex` while it reads the DSP, and the DSP is replaced only under that lock too.
 struct RenHDrumPad::Impl {
     bool is_bluetooth{};
+    int kind{-1};
 
     mutable std::mutex mutex;
     SDL_Joystick* joystick{};
@@ -685,7 +692,23 @@ std::shared_ptr<RenHDrumPad> RenHDrumPad::Create(SDL_Joystick* joystick, SDL_Gam
         LOG_INFO(Input, "RenHDrum: DualSense haptics for {:04X}:{:04X}", vid, pid);
         state->OpenDualSenseAudio();
     }
+    state->kind = xbox_pad ? 2 : switch_pad ? 0 : 1;
+    ++connected_count[state->kind];
+    last_connected_kind = state->kind;
     return std::shared_ptr<RenHDrumPad>(new RenHDrumPad(std::move(state)));
+}
+
+int GetRenHDrumConnectedKind() {
+    const int last = last_connected_kind.load();
+    if (last >= 0 && connected_count[last].load() > 0) {
+        return last;
+    }
+    for (int kind = 0; kind < static_cast<int>(connected_count.size()); ++kind) {
+        if (connected_count[kind].load() > 0) {
+            return kind;
+        }
+    }
+    return -1;
 }
 
 RenHDrumPad::RenHDrumPad(std::unique_ptr<Impl> impl_) : impl{std::move(impl_)} {}
@@ -707,6 +730,10 @@ void RenHDrumPad::Shutdown() {
         joystick = impl->joystick;
         had_engine = impl->Release();
         had_xbox = impl->had_xbox;
+        if (impl->kind >= 0) {
+            --connected_count[impl->kind];
+            impl->kind = -1;
+        }
         triggers = impl->xbox_triggers;
         impl->joystick = nullptr;
         impl->gamepad = nullptr;
@@ -797,6 +824,7 @@ void RenHDrumPad::Tick(std::int64_t now_us) {
     bool send = false;
     bool send_xbox = false;
     bool triggers = false;
+    std::uint32_t strength = 100;
     std::array<std::uint16_t, 4> motors{};
     {
         std::scoped_lock lock{impl->mutex};
@@ -812,8 +840,15 @@ void RenHDrumPad::Tick(std::int64_t now_us) {
         send = impl->engine && Api().engine_tick(impl->engine, now_us, packet.data()) == 1;
         send_xbox = impl->xbox && Api().xbox_tick(impl->xbox, now_us, motors.data()) == 1;
         triggers = impl->xbox_triggers;
+        strength = impl->user.xbox_strength;
     }
     if (send_xbox) {
+        // RenHDrum's mix tops out near 10 % of the range (tuned on the Xbox One S motors);
+        // weaker motors need more.
+        for (auto& motor : motors) {
+            motor = static_cast<std::uint16_t>(
+                std::min<std::uint32_t>(65535u, static_cast<std::uint32_t>(motor) * strength / 100u));
+        }
         // Grips last longer than a tick; trigger pulses stay short so a lost stop cannot
         // leave those motors running.
         const bool sent = SDL_RumbleJoystick(joystick, motors[0], motors[1], 2000);
@@ -848,6 +883,10 @@ bool IsRenHDrumBuilt() {
 
 bool IsRenHDrumLoaded() {
     return false;
+}
+
+int GetRenHDrumConnectedKind() {
+    return -1;
 }
 
 struct RenHDrumPad::Impl {};
