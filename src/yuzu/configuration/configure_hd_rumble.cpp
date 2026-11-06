@@ -22,10 +22,6 @@
 #include "yuzu/configuration/configure_hd_rumble.h"
 
 namespace {
-// Room for "1000%" plus the arrows, whatever the font and scaling
-void FitPercentSpinBox(QSpinBox* box) {
-    box->setMinimumWidth(box->fontMetrics().horizontalAdvance(QStringLiteral("10000%")) + 40);
-}
 
 QLabel* MakeNote(const QString& text) {
     auto* label = new QLabel(text);
@@ -67,13 +63,12 @@ ConfigureHdRumble::ConfigureHdRumble(QWidget* parent) : QDialog(parent) {
     gain = new QSpinBox;
     gain->setRange(25, 1000);
     gain->setSingleStep(25);
-    gain->setSuffix(QStringLiteral("%"));
-    FitPercentSpinBox(gain);
     connect(gain_slider, &QSlider::valueChanged, gain, &QSpinBox::setValue);
     connect(gain, qOverload<int>(&QSpinBox::valueChanged), gain_slider, &QSlider::setValue);
     gain_row->addWidget(new QLabel(tr("Intensity")));
     gain_row->addWidget(gain_slider, 1);
     gain_row->addWidget(gain);
+    gain_row->addWidget(new QLabel(QStringLiteral("%")));
     root->addLayout(gain_row);
 
     auto* boost_row = new QHBoxLayout;
@@ -82,8 +77,6 @@ ConfigureHdRumble::ConfigureHdRumble(QWidget* parent) : QDialog(parent) {
     boost = new QSpinBox;
     boost->setRange(0, 100);
     boost->setSingleStep(5);
-    boost->setSuffix(QStringLiteral("%"));
-    FitPercentSpinBox(boost);
     boost->setToolTip(tr("Lifts weak vibrations more than strong ones. 0% keeps the game's "
                          "curve."));
     connect(boost_slider, &QSlider::valueChanged, boost, &QSpinBox::setValue);
@@ -91,6 +84,7 @@ ConfigureHdRumble::ConfigureHdRumble(QWidget* parent) : QDialog(parent) {
     boost_row->addWidget(new QLabel(tr("Weak rumble boost")));
     boost_row->addWidget(boost_slider, 1);
     boost_row->addWidget(boost);
+    boost_row->addWidget(new QLabel(QStringLiteral("%")));
     root->addLayout(boost_row);
     const bool per_game = !Settings::values.hd_rumble_gain.UsingGlobal();
     root->addWidget(MakeNote(
@@ -200,14 +194,13 @@ QWidget* ConfigureHdRumble::CreateDualSensePage() {
     ds_volume_slider->setRange(0, 100);
     ds_volume = new QSpinBox;
     ds_volume->setRange(0, 100);
-    ds_volume->setSuffix(QStringLiteral("%"));
-    FitPercentSpinBox(ds_volume);
     connect(ds_volume_slider, &QSlider::valueChanged, ds_volume, &QSpinBox::setValue);
     connect(ds_volume, qOverload<int>(&QSpinBox::valueChanged), ds_volume_slider,
             &QSlider::setValue);
     auto* volume_row = new QHBoxLayout;
     volume_row->addWidget(ds_volume_slider, 1);
     volume_row->addWidget(ds_volume);
+    volume_row->addWidget(new QLabel(QStringLiteral("%")));
     ds_crisp_notes = new QCheckBox(tr("Crisp notes"));
     form->addRow(ds_enabled);
     form->addRow(tr("Volume"), volume_row);
