@@ -193,6 +193,9 @@ void EmulatedController::LoadDevices() {
     output_params[4] = android_params;
     output_params[LeftIndex].Set("output", true);
     output_params[RightIndex].Set("output", true);
+    // Which side a vibration is for, for drivers that play the two sides apart (RenHDrum)
+    output_params[LeftIndex].Set("pad", 0);
+    output_params[RightIndex].Set("pad", 1);
     output_params[2].Set("output", true);
     output_params[3].Set("output", true);
     output_params[4].Set("output", true);
