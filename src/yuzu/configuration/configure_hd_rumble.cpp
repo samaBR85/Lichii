@@ -191,9 +191,8 @@ QWidget* ConfigureHdRumble::CreateDualSensePage() {
     auto* page = new QWidget;
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(MakeNote(tr("Rumble through the haptic voice coils of the PS5 controller "
-                                  "(DualSense and DualSense Edge): as 48,000 samples per second "
-                                  "of audio when wired, and as HID reports on Bluetooth.")));
+    layout->addWidget(MakeNote(tr("Detailed rumble on the DualSense and DualSense Edge haptics, "
+                                  "wired or on Bluetooth.")));
 
     auto* group = new QGroupBox(tr("Haptics"));
     auto* form = new QFormLayout(group);
@@ -216,9 +215,6 @@ QWidget* ConfigureHdRumble::CreateDualSensePage() {
     form->addRow(ds_crisp_notes);
     layout->addWidget(group);
 
-    layout->addWidget(MakeNote(tr("Bluetooth haptics need RenHDrum 0.2.1 or newer; with an older "
-                                  "renhdrum.dll a DualSense on Bluetooth uses its standard "
-                                  "rumble.")));
     layout->addStretch();
     return page;
 }
@@ -227,9 +223,8 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
     auto* page = new QWidget;
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(MakeNote(tr("Xbox One, Series and Xbox 360 style controllers, from Microsoft "
-                                  "or other brands: the game's HD Rumble translated by RenHDrum "
-                                  "for the controller's motors.")));
+    layout->addWidget(MakeNote(tr("Xbox controllers and Xbox-style controllers from other "
+                                  "brands.")));
 
     auto* group = new QGroupBox(tr("Motors"));
     auto* form = new QFormLayout(group);
@@ -239,9 +234,7 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
     xbox_strength_slider->setRange(0, 100);
     xbox_strength = new QSpinBox;
     xbox_strength->setRange(0, 100);
-    xbox_strength->setToolTip(
-        tr("Scales what reaches the motors, after Intensity. 10% sends the vibration as it "
-           "is; 100% multiplies it by ten, for controllers with weaker motors."));
+    xbox_strength->setToolTip(tr("How hard the motors run. Raise it if the rumble feels weak."));
     connect(xbox_strength_slider, &QSlider::valueChanged, xbox_strength, &QSpinBox::setValue);
     connect(xbox_strength, qOverload<int>(&QSpinBox::valueChanged), xbox_strength_slider,
             &QSlider::setValue);
@@ -250,22 +243,17 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
     strength_row->addWidget(xbox_strength);
     strength_row->addWidget(new QLabel(QStringLiteral("%")));
     xbox_mode = new QComboBox;
-    xbox_mode->addItem(tr("RenHDrum (detailed)"), 0);
-    xbox_mode->addItem(tr("Direct (stronger)"), 1);
-    xbox_mode->setToolTip(
-        tr("RenHDrum: its four-motor mix with motor spin-up, tuned on the Xbox One S; short "
-           "pulses stay soft. Direct: the low band drives the big motor and the high band the "
-           "small one, as sent, with Intensity and Motor strength applied."));
+    xbox_mode->addItem(tr("RenHDrum (detailed, softer)"), 0);
+    xbox_mode->addItem(tr("Direct (stronger: raw motor power, less nuance)"), 1);
+    xbox_mode->setToolTip(tr("RenHDrum: richer effects, but soft on some controllers.\n"
+                             "Direct: full motor power, simpler feel."));
     form->addRow(xbox_enabled);
     form->addRow(tr("Mode"), xbox_mode);
     form->addRow(tr("Motor strength"), strength_row);
     layout->addWidget(group);
 
-    layout->addWidget(MakeNote(
-        tr("The trigger motors play only when the connection exposes them (an Xbox One or "
-           "Series controller through Windows' Xbox driver). Through XInput, as with most "
-           "2.4 GHz receivers, only the two grip motors play. Tuned on the Xbox One S "
-           "controller; other controllers are untested.")));
+    layout->addWidget(MakeNote(tr("Trigger rumble works only with official Xbox controllers. "
+                                  "Most wireless receivers drive just the grip motors.")));
     layout->addStretch();
     return page;
 }
