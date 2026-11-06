@@ -19,6 +19,10 @@ bool IsRenHDrumBuilt();
 /// True when renhdrum.dll (librenhdrum.so / .dylib) was found and loaded. Loads it on first call.
 bool IsRenHDrumLoaded();
 
+/// Kind of the controller RenHDrum connected most recently and still drives: 0 Switch
+/// controller, 1 DualSense, 2 Xbox style, or -1 when none.
+int GetRenHDrumConnectedKind();
+
 /**
  * Vibration for one SDL controller through RenHDrum (https://github.com/trzz1214/RenHDrum):
  * Switch Pro Controller / Joy-Con get HD Rumble packets, a wired DualSense gets audio haptics on

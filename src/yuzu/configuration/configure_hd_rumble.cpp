@@ -98,12 +98,20 @@ ConfigureHdRumble::ConfigureHdRumble(QWidget* parent) : QDialog(parent) {
     page_list = new QListWidget;
     page_list->addItem(tr("Switch Controller"));
     page_list->addItem(tr("DualSense"));
+    page_list->addItem(tr("Xbox"));
     page_list->setFixedWidth(170);
     pages = new QStackedWidget;
     pages->addWidget(CreateSwitchPage());
     pages->addWidget(CreateDualSensePage());
+    pages->addWidget(CreateXboxPage());
     connect(page_list, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
-    page_list->setCurrentRow(0);
+    // Open on the page of the controller in use, marked as connected
+    const int connected = InputCommon::GetRenHDrumConnectedKind();
+    if (connected >= 0 && connected < page_list->count()) {
+        auto* item = page_list->item(connected);
+        item->setText(tr("%1 (connected)").arg(item->text()));
+    }
+    page_list->setCurrentRow(connected >= 0 ? connected : 0);
     body->addWidget(page_list);
     body->addWidget(pages, 1);
     root->addLayout(body, 1);
@@ -128,6 +136,9 @@ ConfigureHdRumble::ConfigureHdRumble(QWidget* parent) : QDialog(parent) {
 
     connect(hd_enabled, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
     connect(ds_enabled, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
+    connect(xbox_enabled, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
+    connect(xbox_mode, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            &ConfigureHdRumble::UpdateEnabledState);
     connect(envelope_5ms, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
 
     LoadConfiguration();
@@ -182,11 +193,10 @@ QWidget* ConfigureHdRumble::CreateDualSensePage() {
     auto* page = new QWidget;
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
-    layout->addWidget(MakeNote(tr("Rumble through the haptic voice coils of the PS5 controller "
-                                  "(DualSense and DualSense Edge), as 48,000 samples per second "
-                                  "of audio.")));
+    layout->addWidget(MakeNote(tr("Detailed rumble on the DualSense and DualSense Edge haptics, "
+                                  "wired or on Bluetooth.")));
 
-    auto* group = new QGroupBox(tr("Wired (USB)"));
+    auto* group = new QGroupBox(tr("Haptics"));
     auto* form = new QFormLayout(group);
     ds_enabled = new QCheckBox(tr("Use the haptic voice coils"));
     ds_enabled->setToolTip(tr("Off: the DualSense uses its standard rumble."));
@@ -207,7 +217,71 @@ QWidget* ConfigureHdRumble::CreateDualSensePage() {
     form->addRow(ds_crisp_notes);
     layout->addWidget(group);
 
-    layout->addWidget(MakeNote(tr("On Bluetooth the DualSense uses its standard rumble.")));
+    layout->addStretch();
+    return page;
+}
+
+QWidget* ConfigureHdRumble::CreateXboxPage() {
+    auto* page = new QWidget;
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(MakeNote(tr("Xbox controllers and Xbox-style controllers from other "
+                                  "brands.")));
+
+    auto* group = new QGroupBox(tr("Motors"));
+    auto* form = new QFormLayout(group);
+    xbox_enabled = new QCheckBox(tr("Use RenHDrum's Xbox rumble"));
+    xbox_enabled->setToolTip(tr("Off: Xbox controllers use the emulator's standard rumble."));
+    xbox_strength_slider = new QSlider(Qt::Horizontal);
+    xbox_strength_slider->setRange(0, 100);
+    xbox_strength = new QSpinBox;
+    xbox_strength->setRange(0, 100);
+    xbox_strength->setToolTip(tr("How hard the motors run. Raise it if the rumble feels weak."));
+    connect(xbox_strength_slider, &QSlider::valueChanged, xbox_strength, &QSpinBox::setValue);
+    connect(xbox_strength, qOverload<int>(&QSpinBox::valueChanged), xbox_strength_slider,
+            &QSlider::setValue);
+    auto* strength_row = new QHBoxLayout;
+    strength_row->addWidget(xbox_strength_slider, 1);
+    strength_row->addWidget(xbox_strength);
+    strength_row->addWidget(new QLabel(QStringLiteral("%")));
+    xbox_mode = new QComboBox;
+    xbox_mode->addItem(tr("RenHDrum (smart: richer effects, best on official Xbox controllers)"),
+                       0);
+    xbox_mode->addItem(tr("Direct (stronger: raw motor power, less nuance)"), 1);
+    xbox_mode->setToolTip(tr("RenHDrum: richer effects, made for official Xbox controllers.\n"
+                             "Direct: full motor power, simpler feel."));
+    form->addRow(xbox_enabled);
+    form->addRow(tr("Mode"), xbox_mode);
+    form->addRow(tr("Motor strength"), strength_row);
+
+    const auto percent_row = [](QSlider*& slider, QSpinBox*& box, const QString& tip) {
+        slider = new QSlider(Qt::Horizontal);
+        slider->setRange(0, 100);
+        box = new QSpinBox;
+        box->setRange(0, 100);
+        box->setToolTip(tip);
+        slider->setToolTip(tip);
+        QObject::connect(slider, &QSlider::valueChanged, box, &QSpinBox::setValue);
+        QObject::connect(box, qOverload<int>(&QSpinBox::valueChanged), slider,
+                         &QSlider::setValue);
+        auto* row = new QHBoxLayout;
+        row->addWidget(slider, 1);
+        row->addWidget(box);
+        row->addWidget(new QLabel(QStringLiteral("%")));
+        return row;
+    };
+    form->addRow(tr("Detail on main motor"),
+                 percent_row(xbox_detail_slider, xbox_detail,
+                             tr("Adds the fine vibration to the main motor, so it is felt "
+                                "with strength. Direct mode.")));
+    form->addRow(tr("Hit accents"),
+                 percent_row(xbox_accents_slider, xbox_accents,
+                             tr("A short burst when a hit starts, so quick taps are felt. "
+                                "Direct mode.")));
+    layout->addWidget(group);
+
+    layout->addWidget(MakeNote(tr("Trigger rumble works only with official Xbox controllers. "
+                                  "Most wireless receivers drive just the grip motors.")));
     layout->addStretch();
     return page;
 }
@@ -228,6 +302,12 @@ void ConfigureHdRumble::LoadConfiguration() {
     ds_enabled->setChecked(s.dualsense_haptics_enabled.GetValue());
     ds_volume->setValue(std::clamp(s.dualsense_haptics_volume.GetValue(), 0, 100));
     ds_crisp_notes->setChecked(s.dualsense_crisp_notes.GetValue());
+    xbox_enabled->setChecked(s.xbox_rumble_enabled.GetValue());
+    // Stored as 0-1000 (100 = as sent), shown as 0-100%
+    xbox_strength->setValue(s.xbox_motor_strength.GetValue() / 10);
+    xbox_mode->setCurrentIndex(std::clamp(s.xbox_rumble_mode.GetValue(), 0, 1));
+    xbox_detail->setValue(s.xbox_detail_mix.GetValue());
+    xbox_accents->setValue(s.xbox_hit_accents.GetValue());
     UpdateEnabledState();
 }
 
@@ -246,6 +326,11 @@ void ConfigureHdRumble::RestoreDefaults() {
     ds_enabled->setChecked(true);
     ds_volume->setValue(100);
     ds_crisp_notes->setChecked(true);
+    xbox_enabled->setChecked(true);
+    xbox_strength->setValue(10);
+    xbox_mode->setCurrentIndex(0);
+    xbox_detail->setValue(50);
+    xbox_accents->setValue(50);
     UpdateEnabledState();
 }
 
@@ -259,6 +344,14 @@ void ConfigureHdRumble::UpdateEnabledState() {
     ds_volume_slider->setEnabled(ds_enabled->isChecked());
     ds_volume->setEnabled(ds_enabled->isChecked());
     ds_crisp_notes->setEnabled(ds_enabled->isChecked());
+    xbox_strength_slider->setEnabled(xbox_enabled->isChecked());
+    xbox_strength->setEnabled(xbox_enabled->isChecked());
+    xbox_mode->setEnabled(xbox_enabled->isChecked());
+    const bool direct = xbox_enabled->isChecked() && xbox_mode->currentData().toInt() == 1;
+    xbox_detail_slider->setEnabled(direct);
+    xbox_detail->setEnabled(direct);
+    xbox_accents_slider->setEnabled(direct);
+    xbox_accents->setEnabled(direct);
 }
 
 void ConfigureHdRumble::ApplyConfiguration() {
@@ -279,4 +372,9 @@ void ConfigureHdRumble::ApplyConfiguration() {
     s.dualsense_haptics_enabled.SetValue(ds_enabled->isChecked());
     s.dualsense_haptics_volume.SetValue(ds_volume->value());
     s.dualsense_crisp_notes.SetValue(ds_crisp_notes->isChecked());
+    s.xbox_rumble_enabled.SetValue(xbox_enabled->isChecked());
+    s.xbox_motor_strength.SetValue(xbox_strength->value() * 10);
+    s.xbox_rumble_mode.SetValue(xbox_mode->currentData().toInt());
+    s.xbox_detail_mix.SetValue(xbox_detail->value());
+    s.xbox_hit_accents.SetValue(xbox_accents->value());
 }
