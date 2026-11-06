@@ -152,6 +152,8 @@ struct UserSettings {
     bool xbox_enabled{true};
     int xbox_strength{100};
     bool xbox_direct{false};
+    int xbox_detail_mix{50};
+    int xbox_hit_accents{50};
     int gain{100};
     int low_boost{0};
     bool operator==(const UserSettings&) const = default;
@@ -175,6 +177,8 @@ UserSettings ReadUserSettings() {
         .xbox_enabled = s.xbox_rumble_enabled.GetValue(),
         .xbox_strength = std::clamp(s.xbox_motor_strength.GetValue(), 0, 1000),
         .xbox_direct = s.xbox_rumble_mode.GetValue() == 1,
+        .xbox_detail_mix = std::clamp(s.xbox_detail_mix.GetValue(), 0, 100),
+        .xbox_hit_accents = std::clamp(s.xbox_hit_accents.GetValue(), 0, 100),
         .gain = std::clamp(s.hd_rumble_gain.GetValue(), 25, 1000),
         .low_boost = std::clamp(s.hd_rumble_low_boost.GetValue(), 0, 100),
     };
@@ -234,6 +238,9 @@ struct RenHDrumPad::Impl {
     std::array<float, 2> direct_low{};
     std::array<float, 2> direct_high{};
     std::array<std::uint16_t, 2> direct_sent{};
+    // Direct mode accents: the level to settle on once the kick ends
+    std::array<std::uint16_t, 2> direct_target{};
+    std::int64_t kick_until_us{};
 
     std::mutex bt_dsp_mutex;
     SDL_hid_device* bt_hid{};
@@ -784,14 +791,48 @@ bool RenHDrumPad::Vibrate(std::int64_t now_us, bool is_right,
             impl->direct_low[side] = ShapeAmplitude(status.low_amplitude, u);
             impl->direct_high[side] = ShapeAmplitude(status.high_amplitude, u);
             const float scale = static_cast<float>(u.xbox_strength) / 100.0f;
-            const auto to_motor = [scale](float a, float b) {
-                const float v = (std::min)((std::max)(a, b) * scale, 1.0f);
-                return static_cast<std::uint16_t>(v * 65535.0f);
+            const float mix = static_cast<float>(u.xbox_detail_mix) / 100.0f;
+            const auto to_motor = [scale](float v) {
+                return static_cast<std::uint16_t>((std::min)(v * scale, 1.0f) * 65535.0f);
             };
-            direct = {to_motor(impl->direct_low[0], impl->direct_low[1]),
-                      to_motor(impl->direct_high[0], impl->direct_high[1])};
-            send_direct = direct != impl->direct_sent;
-            impl->direct_sent = direct;
+            const float low = (std::max)(impl->direct_low[0], impl->direct_low[1]);
+            const float high = (std::max)(impl->direct_high[0], impl->direct_high[1]);
+            // The big motor also carries part of the fine vibration, where it is felt
+            const std::array<std::uint16_t, 2> target{to_motor((std::max)(low, high * mix)),
+                                                      to_motor(high)};
+            // A sudden rise gets a short burst so the motor spins up in time for quick taps
+            constexpr int KickRise = 65535 * 15 / 100;
+            constexpr std::int64_t KickUs = 25'000;
+            const float accent = static_cast<float>(u.xbox_hit_accents) / 100.0f;
+            const auto kicked = [accent](std::uint16_t t) {
+                return static_cast<std::uint16_t>(t + (65535.0f - t) * accent);
+            };
+            const bool kicking = impl->kick_until_us != 0 && now_us < impl->kick_until_us;
+            if (!kicking && accent > 0.0f &&
+                (target[0] - impl->direct_target[0] >= KickRise ||
+                 target[1] - impl->direct_target[1] >= KickRise)) {
+                impl->kick_until_us = now_us + KickUs;
+                direct = {target[0] - impl->direct_target[0] >= KickRise ? kicked(target[0])
+                                                                         : target[0],
+                          target[1] - impl->direct_target[1] >= KickRise ? kicked(target[1])
+                                                                         : target[1]};
+                send_direct = true;
+            } else if (kicking) {
+                // Settle on the latest target when the kick ends (Tick); a stop ends it now
+                if (target[0] == 0 && target[1] == 0) {
+                    impl->kick_until_us = 0;
+                    direct = target;
+                    send_direct = true;
+                }
+            } else {
+                impl->kick_until_us = 0;
+                direct = target;
+                send_direct = direct != impl->direct_sent;
+            }
+            impl->direct_target = target;
+            if (send_direct) {
+                impl->direct_sent = direct;
+            }
             handled = true;
         } else if (impl->xbox) {
             if (u.hd_enabled && u.xbox_enabled) {
@@ -852,6 +893,8 @@ void RenHDrumPad::Tick(std::int64_t now_us) {
     bool send_xbox = false;
     bool triggers = false;
     std::uint32_t strength = 100;
+    bool send_settle = false;
+    std::array<std::uint16_t, 2> settle{};
     std::array<std::uint16_t, 4> motors{};
     {
         std::scoped_lock lock{impl->mutex};
@@ -865,10 +908,19 @@ void RenHDrumPad::Tick(std::int64_t now_us) {
             open_audio = true;
         }
         send = impl->engine && Api().engine_tick(impl->engine, now_us, packet.data()) == 1;
+        if (impl->kick_until_us != 0 && now_us >= impl->kick_until_us) {
+            impl->kick_until_us = 0;
+            settle = impl->direct_target;
+            send_settle = settle != impl->direct_sent;
+            impl->direct_sent = settle;
+        }
         send_xbox = impl->xbox && !impl->user.xbox_direct &&
                     Api().xbox_tick(impl->xbox, now_us, motors.data()) == 1;
         triggers = impl->xbox_triggers;
         strength = impl->user.xbox_strength;
+    }
+    if (send_settle) {
+        SDL_RumbleJoystick(joystick, settle[0], settle[1], 2000);
     }
     if (send_xbox) {
         // RenHDrum's mix tops out near 10 % of the range (tuned on the Xbox One S motors);

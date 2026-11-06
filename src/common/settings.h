@@ -849,6 +849,9 @@ struct Values {
     Setting<int> xbox_motor_strength{linkage, 100, "xbox_motor_strength", Category::Controls};
     // 0: RenHDrum's four-motor mix, 1: direct (low band to the big motor, high band to the small)
     Setting<int> xbox_rumble_mode{linkage, 0, "xbox_rumble_mode", Category::Controls};
+    // Direct mode: share of the high band added to the big motor, and the kick on a sudden rise
+    Setting<int> xbox_detail_mix{linkage, 50, "xbox_detail_mix", Category::Controls};
+    Setting<int> xbox_hit_accents{linkage, 50, "xbox_hit_accents", Category::Controls};
 
     SwitchableSetting<bool> motion_enabled{linkage, true, "motion_enabled", Category::Controls};
     Setting<std::string> udp_input_servers{linkage, "127.0.0.1:26760", "udp_input_servers",

@@ -137,6 +137,8 @@ ConfigureHdRumble::ConfigureHdRumble(QWidget* parent) : QDialog(parent) {
     connect(hd_enabled, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
     connect(ds_enabled, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
     connect(xbox_enabled, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
+    connect(xbox_mode, qOverload<int>(&QComboBox::currentIndexChanged), this,
+            &ConfigureHdRumble::UpdateEnabledState);
     connect(envelope_5ms, &QCheckBox::toggled, this, &ConfigureHdRumble::UpdateEnabledState);
 
     LoadConfiguration();
@@ -250,6 +252,31 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
     form->addRow(xbox_enabled);
     form->addRow(tr("Mode"), xbox_mode);
     form->addRow(tr("Motor strength"), strength_row);
+
+    const auto percent_row = [](QSlider*& slider, QSpinBox*& box, const QString& tip) {
+        slider = new QSlider(Qt::Horizontal);
+        slider->setRange(0, 100);
+        box = new QSpinBox;
+        box->setRange(0, 100);
+        box->setToolTip(tip);
+        slider->setToolTip(tip);
+        QObject::connect(slider, &QSlider::valueChanged, box, &QSpinBox::setValue);
+        QObject::connect(box, qOverload<int>(&QSpinBox::valueChanged), slider,
+                         &QSlider::setValue);
+        auto* row = new QHBoxLayout;
+        row->addWidget(slider, 1);
+        row->addWidget(box);
+        row->addWidget(new QLabel(QStringLiteral("%")));
+        return row;
+    };
+    form->addRow(tr("Detail on main motor"),
+                 percent_row(xbox_detail_slider, xbox_detail,
+                             tr("Adds the fine vibration to the main motor, so it is felt "
+                                "with strength. Direct mode.")));
+    form->addRow(tr("Hit accents"),
+                 percent_row(xbox_accents_slider, xbox_accents,
+                             tr("A short burst when a hit starts, so quick taps are felt. "
+                                "Direct mode.")));
     layout->addWidget(group);
 
     layout->addWidget(MakeNote(tr("Trigger rumble works only with official Xbox controllers. "
@@ -278,6 +305,8 @@ void ConfigureHdRumble::LoadConfiguration() {
     // Stored as 0-1000 (100 = as sent), shown as 0-100%
     xbox_strength->setValue(s.xbox_motor_strength.GetValue() / 10);
     xbox_mode->setCurrentIndex(std::clamp(s.xbox_rumble_mode.GetValue(), 0, 1));
+    xbox_detail->setValue(s.xbox_detail_mix.GetValue());
+    xbox_accents->setValue(s.xbox_hit_accents.GetValue());
     UpdateEnabledState();
 }
 
@@ -299,6 +328,8 @@ void ConfigureHdRumble::RestoreDefaults() {
     xbox_enabled->setChecked(true);
     xbox_strength->setValue(10);
     xbox_mode->setCurrentIndex(0);
+    xbox_detail->setValue(50);
+    xbox_accents->setValue(50);
     UpdateEnabledState();
 }
 
@@ -315,6 +346,11 @@ void ConfigureHdRumble::UpdateEnabledState() {
     xbox_strength_slider->setEnabled(xbox_enabled->isChecked());
     xbox_strength->setEnabled(xbox_enabled->isChecked());
     xbox_mode->setEnabled(xbox_enabled->isChecked());
+    const bool direct = xbox_enabled->isChecked() && xbox_mode->currentData().toInt() == 1;
+    xbox_detail_slider->setEnabled(direct);
+    xbox_detail->setEnabled(direct);
+    xbox_accents_slider->setEnabled(direct);
+    xbox_accents->setEnabled(direct);
 }
 
 void ConfigureHdRumble::ApplyConfiguration() {
@@ -338,4 +374,6 @@ void ConfigureHdRumble::ApplyConfiguration() {
     s.xbox_rumble_enabled.SetValue(xbox_enabled->isChecked());
     s.xbox_motor_strength.SetValue(xbox_strength->value() * 10);
     s.xbox_rumble_mode.SetValue(xbox_mode->currentData().toInt());
+    s.xbox_detail_mix.SetValue(xbox_detail->value());
+    s.xbox_hit_accents.SetValue(xbox_accents->value());
 }

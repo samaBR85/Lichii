@@ -60,6 +60,10 @@ private:
 
     QCheckBox* xbox_enabled{};
     QComboBox* xbox_mode{};
+    QSlider* xbox_detail_slider{};
+    QSpinBox* xbox_detail{};
+    QSlider* xbox_accents_slider{};
+    QSpinBox* xbox_accents{};
     QSlider* xbox_strength_slider{};
     QSpinBox* xbox_strength{};
 };
