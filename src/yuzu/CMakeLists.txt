@@ -496,13 +496,13 @@ target_link_libraries(yuzu PRIVATE OpenSSL::SSL OpenSSL::Crypto SDL3::SDL3)
 create_target_directory_groups(yuzu)
 
 if (ENABLE_RENHDRUM AND RENHDRUM_DOWNLOAD AND WIN32)
-    set(RENHDRUM_VERSION 0.1.1)
+    set(RENHDRUM_VERSION 0.2.1)
     set(RENHDRUM_DLL "${CMAKE_BINARY_DIR}/renhdrum/${RENHDRUM_VERSION}/renhdrum.dll")
     if (NOT EXISTS "${RENHDRUM_DLL}")
         file(DOWNLOAD
             "https://github.com/trzz1214/RenHDrum/releases/download/v${RENHDRUM_VERSION}/renhdrum.dll"
             "${RENHDRUM_DLL}"
-            EXPECTED_HASH SHA256=b087712e84d481800e31578130a7d82c7811ad1d10f897504a8e7a8ec49489ce
+            EXPECTED_HASH SHA256=35bce3b64a851405ead5484a51d36e51d7ed654f9f5295bd9abce61fdc4e69f1
             SHOW_PROGRESS)
     endif()
     add_custom_command(TARGET yuzu POST_BUILD

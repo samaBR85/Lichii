@@ -194,7 +194,7 @@ Comment: CPM.cmake has had additional modifications from crueter to better work 
 Files: externals/renhdrum/renhdrum.h
 Copyright: 2026 Three-Dola
 License: MIT OR Apache-2.0
-Comment: Public C ABI header of RenHDrum v0.1.1, https://github.com/trzz1214/RenHDrum
+Comment: Public C ABI header of RenHDrum v0.2.1, https://github.com/trzz1214/RenHDrum
 
 Files: .patch/sdl3-hdrumble/*
 Copyright: 2026 Three-Dola
