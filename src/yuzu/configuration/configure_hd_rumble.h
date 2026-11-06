@@ -59,6 +59,7 @@ private:
     QCheckBox* ds_crisp_notes{};
 
     QCheckBox* xbox_enabled{};
+    QComboBox* xbox_mode{};
     QSlider* xbox_strength_slider{};
     QSpinBox* xbox_strength{};
 };

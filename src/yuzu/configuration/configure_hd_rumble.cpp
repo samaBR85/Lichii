@@ -236,13 +236,12 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
     xbox_enabled = new QCheckBox(tr("Use RenHDrum's Xbox rumble"));
     xbox_enabled->setToolTip(tr("Off: Xbox controllers use the emulator's standard rumble."));
     xbox_strength_slider = new QSlider(Qt::Horizontal);
-    xbox_strength_slider->setRange(25, 1000);
+    xbox_strength_slider->setRange(0, 100);
     xbox_strength = new QSpinBox;
-    xbox_strength->setRange(25, 1000);
+    xbox_strength->setRange(0, 100);
     xbox_strength->setToolTip(
-        tr("Scales what reaches the motors, after Intensity. RenHDrum's mix was tuned on the Xbox "
-           "One S and uses little of the range, so controllers with weaker motors may need "
-           "300-800%."));
+        tr("Scales what reaches the motors, after Intensity. 10% sends the vibration as it "
+           "is; 100% multiplies it by ten, for controllers with weaker motors."));
     connect(xbox_strength_slider, &QSlider::valueChanged, xbox_strength, &QSpinBox::setValue);
     connect(xbox_strength, qOverload<int>(&QSpinBox::valueChanged), xbox_strength_slider,
             &QSlider::setValue);
@@ -250,7 +249,15 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
     strength_row->addWidget(xbox_strength_slider, 1);
     strength_row->addWidget(xbox_strength);
     strength_row->addWidget(new QLabel(QStringLiteral("%")));
+    xbox_mode = new QComboBox;
+    xbox_mode->addItem(tr("RenHDrum (detailed)"), 0);
+    xbox_mode->addItem(tr("Direct (stronger)"), 1);
+    xbox_mode->setToolTip(
+        tr("RenHDrum: its four-motor mix with motor spin-up, tuned on the Xbox One S; short "
+           "pulses stay soft. Direct: the low band drives the big motor and the high band the "
+           "small one, as sent, with Intensity and Motor strength applied."));
     form->addRow(xbox_enabled);
+    form->addRow(tr("Mode"), xbox_mode);
     form->addRow(tr("Motor strength"), strength_row);
     layout->addWidget(group);
 
@@ -280,7 +287,9 @@ void ConfigureHdRumble::LoadConfiguration() {
     ds_volume->setValue(std::clamp(s.dualsense_haptics_volume.GetValue(), 0, 100));
     ds_crisp_notes->setChecked(s.dualsense_crisp_notes.GetValue());
     xbox_enabled->setChecked(s.xbox_rumble_enabled.GetValue());
-    xbox_strength->setValue(s.xbox_motor_strength.GetValue());
+    // Stored as 0-1000 (100 = as sent), shown as 0-100%
+    xbox_strength->setValue(s.xbox_motor_strength.GetValue() / 10);
+    xbox_mode->setCurrentIndex(std::clamp(s.xbox_rumble_mode.GetValue(), 0, 1));
     UpdateEnabledState();
 }
 
@@ -300,7 +309,8 @@ void ConfigureHdRumble::RestoreDefaults() {
     ds_volume->setValue(100);
     ds_crisp_notes->setChecked(true);
     xbox_enabled->setChecked(true);
-    xbox_strength->setValue(100);
+    xbox_strength->setValue(10);
+    xbox_mode->setCurrentIndex(0);
     UpdateEnabledState();
 }
 
@@ -316,6 +326,7 @@ void ConfigureHdRumble::UpdateEnabledState() {
     ds_crisp_notes->setEnabled(ds_enabled->isChecked());
     xbox_strength_slider->setEnabled(xbox_enabled->isChecked());
     xbox_strength->setEnabled(xbox_enabled->isChecked());
+    xbox_mode->setEnabled(xbox_enabled->isChecked());
 }
 
 void ConfigureHdRumble::ApplyConfiguration() {
@@ -337,5 +348,6 @@ void ConfigureHdRumble::ApplyConfiguration() {
     s.dualsense_haptics_volume.SetValue(ds_volume->value());
     s.dualsense_crisp_notes.SetValue(ds_crisp_notes->isChecked());
     s.xbox_rumble_enabled.SetValue(xbox_enabled->isChecked());
-    s.xbox_motor_strength.SetValue(xbox_strength->value());
+    s.xbox_motor_strength.SetValue(xbox_strength->value() * 10);
+    s.xbox_rumble_mode.SetValue(xbox_mode->currentData().toInt());
 }
