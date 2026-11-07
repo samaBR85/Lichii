@@ -154,6 +154,7 @@ struct UserSettings {
     bool xbox_direct{false};
     int xbox_detail_mix{50};
     int xbox_hit_accents{50};
+    int xbox_trigger_mix{30};
     int gain{100};
     int low_boost{0};
     bool operator==(const UserSettings&) const = default;
@@ -179,6 +180,7 @@ UserSettings ReadUserSettings() {
         .xbox_direct = s.xbox_rumble_mode.GetValue() == 1,
         .xbox_detail_mix = std::clamp(s.xbox_detail_mix.GetValue(), 0, 100),
         .xbox_hit_accents = std::clamp(s.xbox_hit_accents.GetValue(), 0, 100),
+        .xbox_trigger_mix = std::clamp(s.xbox_trigger_mix.GetValue(), 0, 100),
         .gain = std::clamp(s.hd_rumble_gain.GetValue(), 25, 1000),
         .low_boost = std::clamp(s.hd_rumble_low_boost.GetValue(), 0, 100),
     };
@@ -241,6 +243,9 @@ struct RenHDrumPad::Impl {
     // Direct mode accents: the level to settle on once the kick ends
     std::array<std::uint16_t, 2> direct_target{};
     std::int64_t kick_until_us{};
+    // Direct mode triggers: the fine vibration of each side, and what was last sent
+    std::array<std::uint16_t, 2> trigger_target{};
+    std::array<std::uint16_t, 2> trigger_sent{};
 
     std::mutex bt_dsp_mutex;
     SDL_hid_device* bt_hid{};
@@ -777,6 +782,8 @@ bool RenHDrumPad::Vibrate(std::int64_t now_us, bool is_right,
     bool engine_sample = false;
     bool send_direct = false;
     std::array<std::uint16_t, 2> direct{};
+    bool send_trigger = false;
+    std::array<std::uint16_t, 2> trigger{};
     {
         std::scoped_lock lock{impl->mutex};
         if (!impl->joystick) {
@@ -808,11 +815,23 @@ bool RenHDrumPad::Vibrate(std::int64_t now_us, bool is_right,
             const auto kicked = [accent](std::uint16_t t) {
                 return static_cast<std::uint16_t>(t + (65535.0f - t) * accent);
             };
+            // Triggers carry the fine vibration, left side on LT and right side on RT
+            const float trigger_mix = static_cast<float>(u.xbox_trigger_mix) / 100.0f;
+            const auto on_trigger = [trigger_mix](std::uint16_t v) {
+                return static_cast<std::uint16_t>(static_cast<float>(v) * trigger_mix);
+            };
+            const std::array<std::uint16_t, 2> trigger_full{to_motor(impl->direct_high[0]),
+                                                            to_motor(impl->direct_high[1])};
+            const std::array<std::uint16_t, 2> trigger_target{on_trigger(trigger_full[0]),
+                                                              on_trigger(trigger_full[1])};
             const bool kicking = impl->kick_until_us != 0 && now_us < impl->kick_until_us;
             if (!kicking && accent > 0.0f &&
                 (target[0] - impl->direct_target[0] >= KickRise ||
                  target[1] - impl->direct_target[1] >= KickRise)) {
                 impl->kick_until_us = now_us + KickUs;
+                trigger = {on_trigger(kicked(trigger_full[0])),
+                           on_trigger(kicked(trigger_full[1]))};
+                send_trigger = true;
                 direct = {target[0] - impl->direct_target[0] >= KickRise ? kicked(target[0])
                                                                          : target[0],
                           target[1] - impl->direct_target[1] >= KickRise ? kicked(target[1])
@@ -824,15 +843,24 @@ bool RenHDrumPad::Vibrate(std::int64_t now_us, bool is_right,
                     impl->kick_until_us = 0;
                     direct = target;
                     send_direct = true;
+                    trigger = trigger_target;
+                    send_trigger = true;
                 }
             } else {
                 impl->kick_until_us = 0;
                 direct = target;
                 send_direct = direct != impl->direct_sent;
+                trigger = trigger_target;
+                send_trigger = trigger != impl->trigger_sent;
             }
             impl->direct_target = target;
+            impl->trigger_target = trigger_target;
             if (send_direct) {
                 impl->direct_sent = direct;
+            }
+            send_trigger = send_trigger && impl->xbox_triggers;
+            if (send_trigger) {
+                impl->trigger_sent = trigger;
             }
             handled = true;
         } else if (impl->xbox) {
@@ -874,6 +902,9 @@ bool RenHDrumPad::Vibrate(std::int64_t now_us, bool is_right,
         // A stop always arrives as a zero; the duration only guards a lost one
         SDL_RumbleJoystick(joystick, direct[0], direct[1], 2000);
     }
+    if (send_trigger) {
+        SDL_RumbleJoystickTriggers(joystick, trigger[0], trigger[1], 2000);
+    }
     if (change.stop_engine) {
         SendNeutralPacket(joystick);
     }
@@ -896,6 +927,8 @@ void RenHDrumPad::Tick(std::int64_t now_us) {
     std::uint32_t strength = 100;
     bool send_settle = false;
     std::array<std::uint16_t, 2> settle{};
+    bool send_settle_trigger = false;
+    std::array<std::uint16_t, 2> settle_trigger{};
     std::array<std::uint16_t, 4> motors{};
     {
         std::scoped_lock lock{impl->mutex};
@@ -914,6 +947,12 @@ void RenHDrumPad::Tick(std::int64_t now_us) {
             settle = impl->direct_target;
             send_settle = settle != impl->direct_sent;
             impl->direct_sent = settle;
+            settle_trigger = impl->trigger_target;
+            send_settle_trigger =
+                impl->xbox_triggers && settle_trigger != impl->trigger_sent;
+            if (send_settle_trigger) {
+                impl->trigger_sent = settle_trigger;
+            }
         }
         send_xbox = impl->xbox && !impl->user.xbox_direct &&
                     Api().xbox_tick(impl->xbox, now_us, motors.data()) == 1;
@@ -922,6 +961,9 @@ void RenHDrumPad::Tick(std::int64_t now_us) {
     }
     if (send_settle) {
         SDL_RumbleJoystick(joystick, settle[0], settle[1], 2000);
+    }
+    if (send_settle_trigger) {
+        SDL_RumbleJoystickTriggers(joystick, settle_trigger[0], settle_trigger[1], 2000);
     }
     if (send_xbox) {
         // RenHDrum's mix tops out near 10 % of the range (tuned on the Xbox One S motors);
