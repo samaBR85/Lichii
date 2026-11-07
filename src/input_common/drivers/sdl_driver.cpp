@@ -90,13 +90,15 @@ static bool SDLEventWatcher(void* user_data, SDL_Event* event) {
 
 class SDLJoystick {
 public:
+    // The RenHDrum pad is created by the caller before it takes the joystick map lock: creating
+    // it calls into SDL, and SDL's controller thread can hold the SDL joystick lock while it waits
+    // for the map lock (raw input).
     SDLJoystick(Common::UUID guid_, int port_, SDL_Joystick* joystick,
-                                SDL_Gamepad* game_controller)
+                                SDL_Gamepad* game_controller,
+                                std::shared_ptr<RenHDrumPad> renhdrum_pad = nullptr)
                 : guid{guid_}, port{port_}, sdl_joystick{joystick, &SDL_CloseJoystick},
-                    sdl_controller{game_controller, &SDL_CloseGamepad} {
-        EnableMotion();
-        renhdrum = RenHDrumPad::Create(joystick, game_controller);
-    }
+                    sdl_controller{game_controller, &SDL_CloseGamepad},
+                    renhdrum{std::move(renhdrum_pad)} {}
 
     ~SDLJoystick() {
         if (renhdrum) {
@@ -319,7 +321,8 @@ public:
         return sdl_controller.get();
     }
 
-    void SetSDLJoystick(SDL_Joystick* joystick, SDL_Gamepad* controller) {
+    void SetSDLJoystick(SDL_Joystick* joystick, SDL_Gamepad* controller,
+                        std::shared_ptr<RenHDrumPad> new_pad = nullptr) {
         std::shared_ptr<RenHDrumPad> old_pad;
         {
             std::scoped_lock lock{renhdrum_mutex};
@@ -330,7 +333,6 @@ public:
         }
         sdl_joystick.reset(joystick);
         sdl_controller.reset(controller);
-        auto new_pad = RenHDrumPad::Create(joystick, controller);
         std::scoped_lock lock{renhdrum_mutex};
         renhdrum = std::move(new_pad);
     }
@@ -572,37 +574,40 @@ void SDLDriver::InitJoystick(SDL_JoystickID joystick_id) {
         }
     }
 
-    std::scoped_lock lock{joystick_map_mutex};
-    if (joystick_map.find(guid) == joystick_map.end()) {
-        auto joystick = std::make_shared<SDLJoystick>(guid, 0, sdl_joystick, sdl_gamecontroller);
-        PreSetController(joystick->GetPadIdentifier());
-        joystick->EnableMotion();
-        SetBattery(joystick->GetPadIdentifier(),
-                   joystick->GetBatteryLevel(battery_state, battery_percent));
-        joystick_map[guid].emplace_back(std::move(joystick));
-        return;
+    // Outside the map lock, see SDLJoystick
+    auto renhdrum_pad = RenHDrumPad::Create(sdl_joystick, sdl_gamecontroller);
+
+    // Motion sensors are switched on after the map lock is released, for the same reason
+    std::shared_ptr<SDLJoystick> added;
+    {
+        std::scoped_lock lock{joystick_map_mutex};
+        if (joystick_map.find(guid) == joystick_map.end()) {
+            added = std::make_shared<SDLJoystick>(guid, 0, sdl_joystick, sdl_gamecontroller,
+                                                  std::move(renhdrum_pad));
+            PreSetController(added->GetPadIdentifier());
+            SetBattery(added->GetPadIdentifier(),
+                       added->GetBatteryLevel(battery_state, battery_percent));
+            joystick_map[guid].emplace_back(added);
+        } else {
+            auto& joystick_guid_list = joystick_map[guid];
+            const auto joystick_it =
+                std::find_if(joystick_guid_list.begin(), joystick_guid_list.end(),
+                             [](const auto& joystick) { return !joystick->GetSDLJoystick(); });
+            if (joystick_it != joystick_guid_list.end()) {
+                added = *joystick_it;
+                added->SetSDLJoystick(sdl_joystick, sdl_gamecontroller, std::move(renhdrum_pad));
+            } else {
+                const int port = static_cast<int>(joystick_guid_list.size());
+                added = std::make_shared<SDLJoystick>(guid, port, sdl_joystick,
+                                                      sdl_gamecontroller, std::move(renhdrum_pad));
+                PreSetController(added->GetPadIdentifier());
+                joystick_guid_list.emplace_back(added);
+            }
+            SetBattery(added->GetPadIdentifier(),
+                       added->GetBatteryLevel(battery_state, battery_percent));
+        }
     }
-
-    auto& joystick_guid_list = joystick_map[guid];
-    const auto joystick_it =
-        std::find_if(joystick_guid_list.begin(), joystick_guid_list.end(),
-                     [](const auto& joystick) { return !joystick->GetSDLJoystick(); });
-
-    if (joystick_it != joystick_guid_list.end()) {
-        (*joystick_it)->SetSDLJoystick(sdl_joystick, sdl_gamecontroller);
-        (*joystick_it)->EnableMotion();
-        SetBattery((*joystick_it)->GetPadIdentifier(),
-                   (*joystick_it)->GetBatteryLevel(battery_state, battery_percent));
-        return;
-    }
-
-    const int port = static_cast<int>(joystick_guid_list.size());
-    auto joystick = std::make_shared<SDLJoystick>(guid, port, sdl_joystick, sdl_gamecontroller);
-    PreSetController(joystick->GetPadIdentifier());
-    joystick->EnableMotion();
-    SetBattery(joystick->GetPadIdentifier(),
-               joystick->GetBatteryLevel(battery_state, battery_percent));
-    joystick_guid_list.emplace_back(std::move(joystick));
+    added->EnableMotion();
 }
 
 void SDLDriver::CloseJoystick(SDL_Joystick* sdl_joystick) {
@@ -714,8 +719,15 @@ void SDLDriver::HandleGameControllerEvent(const SDL_Event& event) {
 }
 
 void SDLDriver::CloseJoysticks() {
-    std::scoped_lock lock{joystick_map_mutex};
-    joystick_map.clear();
+    // Destroyed after the map lock is released: a RenHDrum pad stops its rumble through SDL on
+    // shutdown, and SDL's controller thread can hold the SDL joystick lock while it waits for
+    // the map lock.
+    decltype(joystick_map) closing;
+    {
+        std::scoped_lock lock{joystick_map_mutex};
+        closing.swap(joystick_map);
+    }
+    closing.clear();
 }
 
 SDLDriver::SDLDriver(std::string input_engine_) : InputEngine(std::move(input_engine_)) {
