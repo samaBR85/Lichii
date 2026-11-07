@@ -112,6 +112,7 @@ const RenHDrumApi& Api() {
 
 constexpr Uint16 NintendoVendorId = 0x057E;
 constexpr Uint16 SonyVendorId = 0x054C;
+constexpr Uint16 MicrosoftVendorId = 0x045E;
 constexpr std::array<Uint8, 10> NeutralPacket{0x10, 0, 0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40};
 constexpr int DualSenseAudioMaxAttempts = 10;
 // SDL no-queue gap while the 5 ms envelope runs (Ryuhdr AmFmNoQueueGapMs)
@@ -124,12 +125,24 @@ bool IsSwitchHdController(Uint16 vid, Uint16 pid) {
 /// Xbox One / Series and Xbox 360 style pads, Microsoft's or not (GameSir, 8BitDo, PowerA...).
 /// RenHDrum's converter was tuned on an Xbox One S; others get the same four-motor mix, and
 /// a pad whose path has no trigger motors (XInput) keeps only the grips.
-bool IsXboxStyle(SDL_Gamepad* gamepad) {
-    if (!gamepad) {
-        return false;
+bool IsXboxStyle(SDL_Joystick* joystick, SDL_Gamepad* gamepad) {
+    if (gamepad) {
+        const SDL_GamepadType type = SDL_GetGamepadType(gamepad);
+        if (type == SDL_GAMEPAD_TYPE_XBOXONE || type == SDL_GAMEPAD_TYPE_XBOX360) {
+            return true;
+        }
     }
-    const SDL_GamepadType type = SDL_GetGamepadType(gamepad);
-    return type == SDL_GAMEPAD_TYPE_XBOXONE || type == SDL_GAMEPAD_TYPE_XBOX360;
+#ifdef _WIN32
+    // With raw input on, SDL types a third-party XInput pad by its vendor ID and may not call it
+    // an Xbox controller. Windows marks every XInput-capable HID device with "IG_" in its path.
+    const char* path = SDL_GetJoystickPath(joystick);
+    if (path && (std::strstr(path, "IG_") != nullptr || std::strstr(path, "ig_") != nullptr)) {
+        return true;
+    }
+#else
+    (void)joystick;
+#endif
+    return false;
 }
 
 bool IsDualSense(Uint16 vid, Uint16 pid) {
@@ -208,6 +221,8 @@ std::array<std::atomic<int>, 3> connected_count{};
 std::atomic<int> last_connected_kind{-1};
 // Connected Xbox-style controllers that expose trigger motors
 std::atomic<int> xbox_trigger_pads{};
+// Connected official (Microsoft) Xbox controllers whose trigger motors SDL does not expose
+std::atomic<int> xbox_official_no_triggers{};
 
 } // namespace
 
@@ -238,6 +253,7 @@ struct RenHDrumPad::Impl {
 
     RenHdcXboxRumble* xbox{};
     bool xbox_triggers{};
+    bool official_no_triggers{};
     // Direct mode: the latest shaped bands of each side, and the grip values last sent
     std::array<float, 2> direct_low{};
     std::array<float, 2> direct_high{};
@@ -669,8 +685,10 @@ std::shared_ptr<RenHDrumPad> RenHDrumPad::Create(SDL_Joystick* joystick, SDL_Gam
     const bool switch_pad = IsSwitchHdController(vid, pid);
     const auto& api_check = Api();
     const bool xbox_pad = !switch_pad && !IsDualSense(vid, pid) && api_check.HasXbox() &&
-                          IsXboxStyle(gamepad);
+                          IsXboxStyle(joystick, gamepad);
     if (!switch_pad && !xbox_pad && !IsDualSense(vid, pid)) {
+        LOG_INFO(Input, "RenHDrum: {:04X}:{:04X} \"{}\" is not a controller RenHDrum drives",
+                 vid, pid, SDL_GetJoystickName(joystick) ? SDL_GetJoystickName(joystick) : "");
         return nullptr;
     }
 
@@ -718,6 +736,10 @@ std::shared_ptr<RenHDrumPad> RenHDrumPad::Create(SDL_Joystick* joystick, SDL_Gam
     if (state->xbox_triggers) {
         ++xbox_trigger_pads;
     }
+    state->official_no_triggers = xbox_pad && vid == MicrosoftVendorId && !state->xbox_triggers;
+    if (state->official_no_triggers) {
+        ++xbox_official_no_triggers;
+    }
     last_connected_kind = state->kind;
     return std::shared_ptr<RenHDrumPad>(new RenHDrumPad(std::move(state)));
 }
@@ -740,6 +762,14 @@ int GetRenHDrumXboxTriggers() {
         return -1;
     }
     return xbox_trigger_pads.load() > 0 ? 1 : 0;
+}
+
+bool GetRenHDrumXboxNeedsRawInput() {
+#ifdef _WIN32
+    return xbox_official_no_triggers.load() > 0;
+#else
+    return false;
+#endif
 }
 
 RenHDrumPad::RenHDrumPad(std::unique_ptr<Impl> impl_) : impl{std::move(impl_)} {}
@@ -765,6 +795,9 @@ void RenHDrumPad::Shutdown() {
             --connected_count[impl->kind];
             if (impl->xbox_triggers) {
                 --xbox_trigger_pads;
+            }
+            if (impl->official_no_triggers) {
+                --xbox_official_no_triggers;
             }
             impl->kind = -1;
         }
@@ -1029,6 +1062,10 @@ int GetRenHDrumConnectedKind() {
 
 int GetRenHDrumXboxTriggers() {
     return -1;
+}
+
+bool GetRenHDrumXboxNeedsRawInput() {
+    return false;
 }
 
 struct RenHDrumPad::Impl {};

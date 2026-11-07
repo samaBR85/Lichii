@@ -10,7 +10,9 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QApplication>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSlider>
 #include <QSpinBox>
@@ -289,6 +291,35 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
     xbox_no_triggers->setVisible(xbox_triggers_state == 0);
     form->addRow(QString{}, xbox_no_triggers);
     layout->addWidget(group);
+
+    // An official Xbox controller whose trigger motors are out of reach: offer the one setting
+    // that reaches them, where the user is setting up the vibration
+    if (InputCommon::GetRenHDrumXboxNeedsRawInput() && !Settings::values.enable_raw_input.GetValue()) {
+        auto* raw_box = new QWidget;
+        auto* raw_row = new QHBoxLayout(raw_box);
+        raw_row->setContentsMargins(0, 0, 0, 0);
+        auto* raw_note = new QLabel(tr("Trigger rumble needs \"XInput 8 player support\"."));
+        raw_note->setWordWrap(true);
+        auto* raw_button = new QPushButton(tr("Turn it on"));
+        raw_row->addWidget(raw_note, 1);
+        raw_row->addWidget(raw_button);
+        layout->addWidget(raw_box);
+        connect(raw_button, &QPushButton::clicked, this, [this, raw_box] {
+            Settings::values.enable_raw_input.SetValue(true);
+            // Keep the Controls > Advanced checkbox in step, or its OK would undo this
+            for (QWidget* top : QApplication::topLevelWidgets()) {
+                if (auto* box = top->findChild<QCheckBox*>(QStringLiteral("enable_raw_input"))) {
+                    box->setChecked(true);
+                }
+            }
+            raw_box->setVisible(false);
+            QMessageBox::information(
+                this, tr("HD Rumble"),
+                tr("Turned on. Restart the emulator to feel the triggers.\n\nWhile this is on, "
+                   "games can't open their web pages (some manuals and logins). You can turn it "
+                   "off in Controls > Advanced."));
+        });
+    }
 
     layout->addWidget(MakeNote(tr("Trigger rumble works only with official Xbox controllers. "
                                   "Most wireless receivers drive just the grip motors.")));
