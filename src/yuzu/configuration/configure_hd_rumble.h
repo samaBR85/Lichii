@@ -64,6 +64,10 @@ private:
     QSpinBox* xbox_detail{};
     QSlider* xbox_accents_slider{};
     QSpinBox* xbox_accents{};
+    QSlider* xbox_trigger_slider{};
+    QSpinBox* xbox_trigger{};
+    QLabel* xbox_no_triggers{};
+    int xbox_triggers_state{-1};
     QSlider* xbox_strength_slider{};
     QSpinBox* xbox_strength{};
 };

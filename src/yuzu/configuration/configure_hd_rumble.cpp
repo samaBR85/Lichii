@@ -247,7 +247,7 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
     xbox_mode = new QComboBox;
     xbox_mode->addItem(tr("RenHDrum (smart: richer effects, best on official Xbox controllers)"),
                        0);
-    xbox_mode->addItem(tr("Direct (stronger: raw motor power, less nuance)"), 1);
+    xbox_mode->addItem(tr("Direct (stronger: full motor power)"), 1);
     xbox_mode->setToolTip(tr("RenHDrum: richer effects, made for official Xbox controllers.\n"
                              "Direct: full motor power, simpler feel."));
     form->addRow(xbox_enabled);
@@ -278,6 +278,16 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
                  percent_row(xbox_accents_slider, xbox_accents,
                              tr("A short burst when a hit starts, so quick taps are felt. "
                                 "Direct mode.")));
+    form->addRow(tr("Trigger rumble"),
+                 percent_row(xbox_trigger_slider, xbox_trigger,
+                             tr("Fine vibration on the triggers, on controllers that have "
+                                "trigger motors. Direct mode.")));
+    // Whether the controller in use has trigger motors, known when the dialog opens
+    xbox_triggers_state = InputCommon::GetRenHDrumXboxTriggers();
+    xbox_no_triggers = new QLabel(tr("This controller has no trigger motors."));
+    xbox_no_triggers->setStyleSheet(QStringLiteral("color: palette(mid);"));
+    xbox_no_triggers->setVisible(xbox_triggers_state == 0);
+    form->addRow(QString{}, xbox_no_triggers);
     layout->addWidget(group);
 
     layout->addWidget(MakeNote(tr("Trigger rumble works only with official Xbox controllers. "
@@ -308,6 +318,7 @@ void ConfigureHdRumble::LoadConfiguration() {
     xbox_mode->setCurrentIndex(std::clamp(s.xbox_rumble_mode.GetValue(), 0, 1));
     xbox_detail->setValue(s.xbox_detail_mix.GetValue());
     xbox_accents->setValue(s.xbox_hit_accents.GetValue());
+    xbox_trigger->setValue(s.xbox_trigger_mix.GetValue());
     UpdateEnabledState();
 }
 
@@ -331,6 +342,7 @@ void ConfigureHdRumble::RestoreDefaults() {
     xbox_mode->setCurrentIndex(0);
     xbox_detail->setValue(50);
     xbox_accents->setValue(50);
+    xbox_trigger->setValue(20);
     UpdateEnabledState();
 }
 
@@ -352,6 +364,8 @@ void ConfigureHdRumble::UpdateEnabledState() {
     xbox_detail->setEnabled(direct);
     xbox_accents_slider->setEnabled(direct);
     xbox_accents->setEnabled(direct);
+    xbox_trigger_slider->setEnabled(direct && xbox_triggers_state != 0);
+    xbox_trigger->setEnabled(direct && xbox_triggers_state != 0);
 }
 
 void ConfigureHdRumble::ApplyConfiguration() {
@@ -377,4 +391,5 @@ void ConfigureHdRumble::ApplyConfiguration() {
     s.xbox_rumble_mode.SetValue(xbox_mode->currentData().toInt());
     s.xbox_detail_mix.SetValue(xbox_detail->value());
     s.xbox_hit_accents.SetValue(xbox_accents->value());
+    s.xbox_trigger_mix.SetValue(xbox_trigger->value());
 }
