@@ -154,7 +154,7 @@ struct UserSettings {
     bool xbox_direct{false};
     int xbox_detail_mix{50};
     int xbox_hit_accents{50};
-    int xbox_trigger_mix{30};
+    int xbox_trigger_mix{20};
     int gain{100};
     int low_boost{0};
     bool operator==(const UserSettings&) const = default;
@@ -206,6 +206,8 @@ float ShapeAmplitude(float amplitude, const UserSettings& u) {
 // Controllers RenHDrum drives, per kind, for the settings dialog
 std::array<std::atomic<int>, 3> connected_count{};
 std::atomic<int> last_connected_kind{-1};
+// Connected Xbox-style controllers that expose trigger motors
+std::atomic<int> xbox_trigger_pads{};
 
 } // namespace
 
@@ -713,6 +715,9 @@ std::shared_ptr<RenHDrumPad> RenHDrumPad::Create(SDL_Joystick* joystick, SDL_Gam
     }
     state->kind = xbox_pad ? 2 : switch_pad ? 0 : 1;
     ++connected_count[state->kind];
+    if (state->xbox_triggers) {
+        ++xbox_trigger_pads;
+    }
     last_connected_kind = state->kind;
     return std::shared_ptr<RenHDrumPad>(new RenHDrumPad(std::move(state)));
 }
@@ -728,6 +733,13 @@ int GetRenHDrumConnectedKind() {
         }
     }
     return -1;
+}
+
+int GetRenHDrumXboxTriggers() {
+    if (connected_count[2].load() == 0) {
+        return -1;
+    }
+    return xbox_trigger_pads.load() > 0 ? 1 : 0;
 }
 
 RenHDrumPad::RenHDrumPad(std::unique_ptr<Impl> impl_) : impl{std::move(impl_)} {}
@@ -751,6 +763,9 @@ void RenHDrumPad::Shutdown() {
         had_xbox = impl->had_xbox;
         if (impl->kind >= 0) {
             --connected_count[impl->kind];
+            if (impl->xbox_triggers) {
+                --xbox_trigger_pads;
+            }
             impl->kind = -1;
         }
         triggers = impl->xbox_triggers;
@@ -1009,6 +1024,10 @@ bool IsRenHDrumLoaded() {
 }
 
 int GetRenHDrumConnectedKind() {
+    return -1;
+}
+
+int GetRenHDrumXboxTriggers() {
     return -1;
 }
 

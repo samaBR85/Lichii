@@ -858,7 +858,7 @@ struct Values {
     Setting<int> xbox_detail_mix{linkage, 50, "xbox_detail_mix", Category::Controls};
     Setting<int> xbox_hit_accents{linkage, 50, "xbox_hit_accents", Category::Controls};
     // Direct mode: share of the high band sent to the trigger motors (left side LT, right RT)
-    Setting<int> xbox_trigger_mix{linkage, 30, "xbox_trigger_mix", Category::Controls};
+    Setting<int> xbox_trigger_mix{linkage, 20, "xbox_trigger_mix", Category::Controls};
 
     SwitchableSetting<bool> motion_enabled{linkage, true, "motion_enabled", Category::Controls};
     Setting<std::string> udp_input_servers{linkage, "127.0.0.1:26760", "udp_input_servers",
