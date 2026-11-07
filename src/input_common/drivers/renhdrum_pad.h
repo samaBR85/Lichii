@@ -27,6 +27,10 @@ int GetRenHDrumConnectedKind();
 /// -1 when no Xbox-style controller is connected.
 int GetRenHDrumXboxTriggers();
 
+/// True when an official Xbox controller is connected but its trigger motors are out of reach:
+/// on Windows SDL drives them only through raw input ("Enable XInput 8 player support").
+bool GetRenHDrumXboxNeedsRawInput();
+
 /**
  * Vibration for one SDL controller through RenHDrum (https://github.com/trzz1214/RenHDrum):
  * Switch Pro Controller / Joy-Con get HD Rumble packets, a wired DualSense gets audio haptics on
