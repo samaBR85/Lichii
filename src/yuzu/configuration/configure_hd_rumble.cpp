@@ -277,6 +277,10 @@ QWidget* ConfigureHdRumble::CreateXboxPage() {
                  percent_row(xbox_accents_slider, xbox_accents,
                              tr("A short burst when a hit starts, so quick taps are felt. "
                                 "Direct mode.")));
+    form->addRow(tr("Trigger rumble"),
+                 percent_row(xbox_trigger_slider, xbox_trigger,
+                             tr("Fine vibration on the triggers, on controllers that have "
+                                "trigger motors. Direct mode.")));
     layout->addWidget(group);
 
     layout->addWidget(MakeNote(tr("Trigger rumble works only with official Xbox controllers. "
@@ -307,6 +311,7 @@ void ConfigureHdRumble::LoadConfiguration() {
     xbox_mode->setCurrentIndex(std::clamp(s.xbox_rumble_mode.GetValue(), 0, 1));
     xbox_detail->setValue(s.xbox_detail_mix.GetValue());
     xbox_accents->setValue(s.xbox_hit_accents.GetValue());
+    xbox_trigger->setValue(s.xbox_trigger_mix.GetValue());
     UpdateEnabledState();
 }
 
@@ -330,6 +335,7 @@ void ConfigureHdRumble::RestoreDefaults() {
     xbox_mode->setCurrentIndex(0);
     xbox_detail->setValue(50);
     xbox_accents->setValue(50);
+    xbox_trigger->setValue(30);
     UpdateEnabledState();
 }
 
@@ -351,6 +357,8 @@ void ConfigureHdRumble::UpdateEnabledState() {
     xbox_detail->setEnabled(direct);
     xbox_accents_slider->setEnabled(direct);
     xbox_accents->setEnabled(direct);
+    xbox_trigger_slider->setEnabled(direct);
+    xbox_trigger->setEnabled(direct);
 }
 
 void ConfigureHdRumble::ApplyConfiguration() {
@@ -376,4 +384,5 @@ void ConfigureHdRumble::ApplyConfiguration() {
     s.xbox_rumble_mode.SetValue(xbox_mode->currentData().toInt());
     s.xbox_detail_mix.SetValue(xbox_detail->value());
     s.xbox_hit_accents.SetValue(xbox_accents->value());
+    s.xbox_trigger_mix.SetValue(xbox_trigger->value());
 }
